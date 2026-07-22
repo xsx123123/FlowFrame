@@ -1,0 +1,24 @@
+# ─── 项目元数据 ─────────────────────────────────────────
+project_name: my_project
+Genome_Version: hg38
+species: Homo_sapiens
+client: demo
+
+# ─── 路径（必须绝对路径）────────────────────────────────
+raw_data_path:
+  - /data/project/00.raw_data
+sample_csv: /data/project/01.workflow/samples.csv
+paired_csv: /data/project/01.workflow/contrasts.csv
+workflow: /data/project/01.workflow
+data_deliver: /data/project/02.data_deliver
+reference_path: /data/reference/<X>Flow_reference
+
+# ─── 执行模式 ───────────────────────────────────────────
+execution_mode: local
+queue_id: ""
+
+# ─── 模块开关（按需覆盖）────────────────────────────────
+only_qc: false
+qc_clean: true
+deliver: true
+report: true

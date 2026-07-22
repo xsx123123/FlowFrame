@@ -1,0 +1,167 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "RNAFlow Main Configuration Schema"
+description: "Schema for validating the main RNAFlow pipeline configuration file (config.yaml)"
+type: "object"
+
+definitions:
+  genomeConfig:
+    type: "object"
+    description: "Genome configuration for a specific genome version"
+    properties:
+      index:
+        type: "string"
+        description: "Path to STAR index"
+      genome_fa:
+        type: "string"
+        description: "Path to genome FASTA file"
+      genome_gtf:
+        type: "string"
+        description: "Path to genome GTF file"
+      genome_gff:
+        type: "string"
+        description: "Path to genome GFF file"
+      rsem_index:
+        type: "string"
+        description: "Path to RSEM index"
+      rsem_index_dir:
+        type: "string"
+        description: "Path to RSEM index directory"
+      bed12:
+        type: "string"
+        description: "Path to BED12 file"
+      ploidy:
+        type: "number"
+        description: "Ploidy value"
+    required: ["index", "genome_fa", "genome_gtf", "genome_gff", "rsem_index", "rsem_index_dir", "bed12", "ploidy"]
+
+properties:
+  project_name:
+    type: "string"
+    description: "Name of the project"
+    minLength: 1
+  Genome_Version:
+    type: "string"
+    description: "Genome version to use for analysis"
+    enum: ["Lsat_Salinas_v8_wx", "Lsat_Salinas_v11", "ITAG4.1", "TAIR10.1", "GRCm39", "hg38","Lsat_Salinas_v11_wx"]
+  species:
+    type: "string"
+    description: "Species name"
+    minLength: 1
+  client:
+    type: "string"
+    description: "Client information"
+    minLength: 1
+  raw_data_path:
+    type: "array"
+    description: "Paths to raw data directories"
+    items:
+      type: "string"
+    minItems: 1
+  sample_csv:
+    type: "string"
+    description: "Path to sample CSV file"
+    minLength: 1
+  paired_csv:
+    type: "string"
+    description: "Path to paired samples CSV file (required for DEG analysis, optional for QC-only mode)"
+  workflow:
+    type: "string"
+    description: "Path to workflow directory"
+    minLength: 1
+  data_deliver:
+    type: "string"
+    description: "Path to data delivery directory"
+    minLength: 1
+  execution_mode:
+    type: "string"
+    description: "Execution mode for the pipeline"
+    enum: ["local", "cluster"]
+    default: "local"
+  queue_id:
+    type: "string"
+    description: "Queue ID for cluster execution"
+    minLength: 1
+  Library_Types:
+    type: "string"
+    description: "Fragment library type"
+    enum: ["fr-unstranded", "fr-firststrand", "fr-secondstrand"]
+    default: "fr-firststrand"
+  call_variant:
+    type: "boolean"
+    description: "Whether to call variants from RNA-seq data"
+    default: false
+  detect_novel_transcripts:
+    type: "boolean"
+    description: "Whether to detect novel transcripts using StringTie"
+    default: false
+  rmats:
+    type: "boolean"
+    description: "Whether to run rmats analysis"
+    default: true
+  gene_fusion:
+    type: "boolean"
+    description: "Whether to run gene fusion detection using Arriba"
+    default: false
+  deg:
+    type: "boolean"
+    description: "Whether to run deg analysis"
+    default: true
+  report:
+    type: "boolean"
+    description: "Whether to generate HTML report for RNA-seq"
+    default: true
+  loki_url:
+    type: "string"
+    description: "URL for Loki logging server (optional)"
+  only_qc:
+    type: "boolean"
+    description: "Run only QC analysis"
+    default: false
+  bam_remove:
+    type: "boolean"
+    description: "Remove intermediate BAM files"
+    default: true
+  print_target:
+    type: "boolean"
+    description: "Print target files instead of executing"
+    default: false
+  print_sample:
+    type: "boolean"
+    description: "Print sample information during execution"
+    default: false
+  log_level:
+    type: "string"
+    description: "Logging level"
+    enum: ["DEBUG", "INFO", "WARNING", "ERROR"]
+    default: "INFO"
+  reference_path:
+    type: "string"
+    description: "Root path for reference genome files"
+  fastq_screen_db_path:
+    type: "string"
+    description: "Root path for fastq_screen database"
+  parameter:
+    type: "object"
+    description: "Software parameters configuration"
+    properties:
+      star_index:
+        type: "object"
+        description: "STAR index configuration for different genome versions"
+        properties:
+          Lsat_Salinas_v11:
+            $ref: "#/definitions/genomeConfig"
+            description: "Lsat Salinas v11 genome configuration"
+          Lsat_Salinas_v8:
+            $ref: "#/definitions/genomeConfig"
+            description: "Lsat Salinas v8 genome configuration"
+          ITAG4.1:
+            $ref: "#/definitions/genomeConfig"
+            description: "ITAG4.1 genome configuration"
+          TAIR10.1:
+            $ref: "#/definitions/genomeConfig"
+            description: "TAIR10.1 genome configuration"
+          GRCm39:
+            $ref: "#/definitions/genomeConfig"
+            description: "GRCm39 genome configuration"
+    additionalProperties: true
+additionalProperties: true

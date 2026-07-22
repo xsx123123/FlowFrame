@@ -1,0 +1,3 @@
+display_name: Flow Framework
+short_description: Flow 家族多组学流程架构规范与快速接入指南
+default_prompt: 帮我将现有分析流程转换为 Flow 家族成员

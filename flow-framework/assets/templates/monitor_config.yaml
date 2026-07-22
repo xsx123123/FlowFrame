@@ -1,0 +1,16 @@
+# Loki 兼容端点（可选）
+loki_url: "http://web:8000/api/v1/workflow-monitor"
+project_name: "<task_id>"
+
+# OmicHub 原生事件端点（推荐）
+omichub_monitor_url: "https://omichub.example.edu/api/v1/workflow-monitor/events"
+omichub_monitor_token: "${OMICHUB_WORKFLOW_MONITOR_TOKEN}"
+omichub_task_id: "<task_id>"
+omichub_flow_id: "<flow_id>"
+omichub_user_id: "<user_id>"
+
+# 生产环境安全加固
+omichub_monitor_sign_requests: true
+omichub_monitor_signing_key: "${OMICHUB_WORKFLOW_MONITOR_SIGNING_KEY}"
+omichub_monitor_encrypt_payload: false
+omichub_monitor_encryption_key: "${OMICHUB_WORKFLOW_MONITOR_ENCRYPTION_KEY}"

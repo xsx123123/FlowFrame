@@ -1,0 +1,9 @@
+[submodule "src"]
+	path = src
+	url = git@github.com:xsx123123/JZ_Tools.git
+[submodule "report"]
+	path = report
+	url = git@github.com:xsx123123/bioreport.git
+[submodule "container_env"]
+	path = container_env
+	url = git@github.com:xsx123123/Flowcontainer.git
