@@ -1,63 +1,65 @@
-# Flow × AI Agent：Rule 级自动编排与自修复技术规范
+# Flow × AI Agent：Rule 级编排、验证与版本治理技术规范
 
-> 版本：v1.0（2026-09-03）
-> 状态：规范定稿。阶段 0 审计报告回填后，更新「现状审计」章节。
-> 适用范围：Flow（Snakemake）流程；思想可推广到 Nextflow / WDL / Makefile / CI 等声明式流程。
+> 版本：v1.1（2026-09-06）
+> 状态：讨论结论已纳入；待现状审计、Schema 试点和端到端验收后冻结实现契约。
+> 适用范围：采用统一规范构建的 Flow 系列 Snakemake 流程。
+> 本文定义目标能力、接口和验收要求，不代表所述工具已经实现。文中的拟议路径、命令和 YAML 示例均需在实施阶段落地验证。
 
 ---
 
 ## 一、范围与目标
 
-### 1.1 适用范围
+### 1.1 核心定位
 
-本规范定义 Flow（Snakemake）流程与 AI Agent 协作时的接口契约、数据模型、编排规则与验证方式。适用对象包括：
+**Agent 基于已有、经过严格测试和专家审核的已发布 rule，生成候选分析方案与 pipeline 实现；通过自动验证和专家审核后，发布 pipeline 并按授权策略运行。**
 
-- 流程开发者：编写并维护 Snakemake rule 及其 manifest；
-- Agent 开发者：实现或配置按本规范执行编排与修复的 Agent；
-- 实施人员：按阶段实施本规范，并逐项验收。
+必须区分两种产出：
+
+1. **复用已有 rule 的候选 pipeline**：审核对象是科学方案、组合关系、参数、依赖版本和验证证据；审核通过后发布 pipeline，不重复创建相同 rule。
+2. **新增或修改的候选 rule**：仅在现有能力不足或存在缺陷时进入 Build 开发流程；连同 manifest、相关文件、环境和测试一并验证，经专家审核后作为新版本入库，再供 pipeline 引用。
+
+已审核 rule 的可信范围受其输入条件、科学适用范围和版本约束限定。单条 rule 审核通过，不等于任意组合都科学正确。
+
+Build 是辅助流程开发：Agent 承担检索、生成、测试、诊断和整理证据，专家负责科学方案与发布决策。Run 是分析执行与运行维护：在批准的方案、版本和权限范围内推进任务。
 
 ### 1.2 目标能力
 
-用户用自然语言提出分析需求后，Agent 按本规范自动完成以下步骤：
+- 自然语言需求转为可审核的分析方案和机器可验证的流程计划。
+- 优先复用现有入口和已审核 rule；通过确定性生成器产出配置或组合文件。
+- 分层验证契约、实际 DAG、最小真实运行和结果质量。
+- 提供自主、监督、逐项确认三种运行模式，支持专家观察、暂停、批准和拒绝。
+- 从首个试点开始实现 rule 级版本管理，完整锁定相关文件及传递依赖。
+- 支持客户使用历史 pipeline、版本升级比较和隔离回退。
+- 参考数据通过对象存储及版本化 YAML 描述，运行时校验身份与内容。
+- 全程保留可查询的计划、审批、运行、修复和产物证据。
 
-1. **选择 rule**：从 rule 库中选出能完成该需求的 rule 组合；若发现缺口，提议新增 rule，不猜测；
-2. **配置样本与参数**：生成或修正 sample sheet 与 `config.yaml`，使配对信息在配置层完成，rule 本身不做改动；
-3. **验证流程**：使用 `snakemake -n` 对整条流程组合做 dry-run 验证，读取报错并修复，直到通过；
-4. **运行与修复**：给出计算量摘要，经用户确认后正式运行；运行失败时读取 log 自修复，并使用 `--rerun-incomplete` 断点续跑。
+### 1.3 能力边界
 
-### 1.3 核心设计判断
+本方案提高可追溯性、可重复执行性和流程自动化程度，不承诺所有科学判断正确或所有错误自动修复。专家审核分析设计，可执行校验器检查真实数据与产物，Agent 结合组学知识解释异常；三者互补。
 
-1. **Snakemake 已实现「拼接」算法**：当目标文件已包含在 workflow 的 target 中时，装入全部 rule 后，Snakemake 会按 input/output 模式自动 backward-chaining 反推所需 rule 子集。Agent 不需要自己拼 DAG，只需要选对 target。
-
-2. **纯 LLM 生成的流程无法直接执行**：业界 benchmark 显示 LLM 直接生成的 workflow 结构准确率可达 93%，但没有一份能不经修正直接执行。因此本方案的核心不是「更强的描述」，而是 **结构化契约 + dry-run 验证回路**。[^1]
-
-3. **描述补充的是契约，不是散文**：现有 rule docstring 对人友好，但对 Agent 精确匹配不够用。需要机器可读的三件套：**rule manifest（接口契约）+ 端口注册表（谁产谁消）+ 产物目录（需求→target 映射）**。
+`snakemake -n` 是必要的验证步骤，但不能证明工具实际运行成功、checkpoint 下游全部展开或结果科学正确。环境和数据完全锁定也不自动保证结果逐字节一致；非确定性工具需另外定义随机种子、运行条件及允许偏差。
 
 ### 1.4 总体架构
 
-```
-用户需求（自然语言）
-      │
-      ▼
-┌─────────────────────────────────────────────┐
-│  Agent 决策层（SOP 驱动）                     │
-│   1. 查 catalog.yaml：需求→现成 target？      │
-│   2. 查 ports.yaml + manifests：端口可成链？  │
-│   3. 断链 → 提议新 rule（创建后测试，人工审核后入库）│
-└─────────────────────────────────────────────┘
-      │  产出：target 列表 + sample sheet + config（+ 可选组合 Snakefile）
-      ▼
-┌─────────────────────────────────────────────┐
-│  Snakemake 执行层（本方案不改动其机制）        │
-│   backward-chaining 自动选定 rule 子集        │
-│   -n dry-run → --detailed-summary → 正式运行  │
-└─────────────────────────────────────────────┘
-      │  报错回灌：MissingInput / AmbiguousRule / KeyError …
-      ▼
-  Agent 读报错 + 读 log → 修复（优先级：样本表 > config > 组合文件 > 新 rule > 已有 rule）
-```
+```text
+需求 + 数据条件
+       ↓
+Build：检索已审核 rule → AnalysisPlan → 专家审核科学方案
+       ↓
+PipelinePlan → 版本解析与锁定 → 确定性编译
+       ↓
+静态/契约验证 → dry-run → 最小真实运行 → 结果校验
+       ↓
+候选实现审核 → 不可变 pipeline 发布
+       ↓
+Run：选择发布版本 → 项目预检 → 运行授权 → 提交
+       ↓
+监控 → 结果校验 → 授权内修复 / 专家核对 / 转 Build
+       ↓
+交付 + run.lock.yaml + ledger + 产物清单
 
-`catalog.yaml` 与 `ports.yaml` 可以只保存每个 rule 的描述和详情位置链接，实现渐进式披露，避免一次性加载全部 rule 导致模型注意力稀释。
+历史复跑/回退：选择旧发布版本 → 隔离目录 → 新 run_id → 同样的预检与授权
+```
 
 ---
 
@@ -65,807 +67,536 @@
 
 | 术语 | 含义 |
 |---|---|
-| **rule** | Snakemake 中的基本执行单元，定义 input/output/params/shell 等。 |
-| **module** | 一个 `.smk` 文件，包含一组相关 rule。 |
-| **manifest** | 描述模块与 rule 接口契约的 YAML 文件，供 Agent 读取。 |
-| **port（端口）** | 语义化的 input/output 类型，例如 `reads.r1.fastq`。 |
-| **deliverable** | 用户会直接开口要的最终产物，对应 `catalog.yaml` 条目。 |
-| **流程组合** | 为满足某一需求，由 Agent 选择 rule 并生成的可执行 Snakemake 流程。 |
-| **组合 Snakefile** | Agent 生成的、引用库中 rule 的 Snakefile，位于 `composed/` 目录。 |
-| **动态 rule** | 包含 checkpoint、input 函数、`unpack()` 等运行期才能确定 I/O 的 rule。 |
-| **gate** | 只作为依赖闸门、不进入 shell 命令的 input。 |
-| **SOP** | Agent 必须遵守的标准操作流程，写入 `AGENTS.md`。 |
-| **run ledger** | 记录每次 dry-run、提交、报错、修复与人工决策的 JSONL 审计日志。 |
+| rule | Snakemake 执行单元；用稳定的 `rule_id` 标识逻辑能力 |
+| module | 包含相关 rule 的源码模块；不能假设任意旧 `.smk` 都可独立导入 |
+| manifest | rule 的接口、适用条件、文件依赖、环境和校验契约 |
+| port | 输入输出的语义类型及兼容属性，不是简单的文件扩展名 |
+| catalog / deliverable | 用户需求到可交付产物、入口和所需能力的映射 |
+| AnalysisPlan | 面向专家的科学分析方案 |
+| PipelinePlan | 面向编译器的结构化实现计划 |
+| rule release | 某个 `rule_id@version` 对应的不可变依赖闭包和审核记录 |
+| pipeline release | 组合逻辑、参数策略、编译产物及依赖锁的不可变发布单元 |
+| release manifest | 发布身份、源码定位、依赖与证据摘要清单 |
+| run lock | 单次运行使用的确切发布版本、数据、配置、环境和策略快照 |
+| ledger | 运行服务追加写入的事件台账；不是 Agent 自行宣称审批的文本 |
+| validation policy | 版本化的检查项、适用范围、阈值来源、严重性和处置规则 |
+| approval | 绑定具体对象摘要、范围和审批人的授权记录 |
+| Build / Run | 同一个 Agent 的两类能力角色，不要求两个独立 Agent |
+| execution policy | 运行模式、动作白名单、资源预算、重试和审批规则 |
+| skill | 指导方案设计和异常解释的知识资源，不替代实际校验或权限控制 |
 
-本规范使用以下助动词：
-
-- **必须**：强制性要求，违反将导致方案无法正常工作或产生严重风险；
-- **禁止**：绝对不允许的行为；
-- **应该**：强烈推荐，允许有正当理由的例外；
-- **可以**：可选做法，按实际情况决定。
-
----
-
-## 三、关键约束与设计原则
-
-这四个约束是整套方案的地基，阶段 0 审计和后续所有建设都围绕它们展开。
-
-### 3.1 接口契约化：类型化端口
-
-现状：rule 之间靠硬编码路径字符串衔接（如下面的 `01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip` 同时出现在上游 output 和下游 input 的 `expand` 里）。人能看懂，但 Agent 靠字符串匹配猜上下游关系既脆弱又不可靠。
-
-```snakemake
-rule short_read_qc_r1:
-    input:
-        md5_check = "01.qc/md5_check.tsv",
-        link_r1_dir = os.path.join("00.raw_data",
-                                      config['convert_md5'],
-                                      "{sample}/{sample}_R1.fq.gz"),
-    output:
-        r1_html = "01.qc/short_read_qc_r1/{sample}_R1_fastqc.html",
-        r1_zip = "01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip",
-    ...
-
-rule short_read_multiqc_r1:
-    input:
-        fastqc_files_r1 = expand("01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip", sample=samples.keys()),
-    output:
-        report_dir = "01.qc/short_read_r1_multiqc/multiqc_r1_raw-data_report.html",
-    ...
-```
-
-**要求**：给每个 input/output 声明一个语义端口类型。Agent 组链时，在端口注册表 `ports.yaml` 里做「生产者—消费者」匹配，而不是猜路径。路径约定（编号目录 + `{sample}` 通配符）保持不变，端口是叠加在现有路径之上的语义层，不要求重排目录结构。
-
-| port 类型 | 语义 | 生产者（例） | 消费者（例） |
-|---|---|---|---|
-| `reads.r1.fastq` | R1 原始/处理后 reads | 数据链接 / trim 模块 | `short_read_qc_r1`、比对模块 |
-| `qc.fastqc.zip` | FastQC 原始数据包 | `short_read_qc_r1/r2` | `short_read_multiqc_r1/r2` |
-| `qc.md5_check.tsv` | MD5 校验闸门 | md5 校验 rule | 所有读原始数据的 rule（gate） |
-| `align.bam` | 比对结果 BAM | 比对模块 | 定量 / 质控模块 |
-
-### 3.2 解开全局 config 耦合
-
-现状：rule 体直接读全局 config（如 `config['convert_md5']`、`config['parameter']['threads']['fastqc']`）。单条固定流程没问题；跨模块自由组合时，被选中 rule 依赖的 config key 缺一不可，缺了就是运行期 `KeyError`。
-
-**要求**：每个 rule 在 manifest 中声明 `config_requires`（key 路径列表）。组合时由校验脚本自动合并所选 rule 的 `config_requires`，对照当前 config 文件逐项检查，缺 key 在 dry-run 之前就必须报出，并说明应补什么。
-
-### 3.3 隐性依赖显式化
-
-现状：`rule_resource(config, 'low_resource', skip_queue_on_local=True, logger=logger)` 这类自定义 Python helper 是 rule 的隐性运行时依赖——把 rule 摘到别的上下文就 `NameError`。
-
-**要求**：
-
-1. 把所有自定义 helper 固定收拢进一个公共 `rules/common.smk`（或已存在则盘点登记）；
-2. 每个模块 manifest 声明 `requires_helpers`；
-3. Agent 生成的任何组合 Snakefile，第一行必须 `include: "rules/common.smk"`——写进 SOP 禁区条款。
-
-### 3.4 动态 rule 打标，禁止静态推断
-
-现状与风险：若流程中存在 checkpoint、input 函数（`input: lambda wc: ...`）、`unpack()` 等动态 I/O，Agent 读代码「脑补」上下游必然出错。
-
-**要求**：manifest 中标注 `dynamic: true`；SOP 规定 Agent 对动态 rule **只许 dry-run 实测**（`snakemake -n` 会真实展开 DAG），禁止凭读代码断言其 I/O。
-
-### 3.5 使用 Snakemake module 系统
-
-Snakemake（≥6.0）原生支持跨流程复用 rule：
-
-```python
-module qc:
-    snakefile: "rules/03.short_read_qc.smk"
-    config: config
-
-use rule * from qc as qc_*
-```
-
-**要求**：Agent 组合新流程时**必须生成一个新的组合 Snakefile**（如 `composed/20260903_xxx需求/Snakefile`），用 `module` + `use rule` 从模块库挑选所需 rule，加命名空间前缀避免 `AmbiguousRuleException`，库中原始文件一行不改。这比复制粘贴 rule 干净、可回溯、可随时整体废弃。
-
-### 3.6 Agent 可直接调用的命令
-
-下表命令由 Snakemake 原生提供，Agent 可以直接调用，无需额外开发。
-
-| 命令 | 用途 |
-|---|---|
-| `snakemake -n <targets>` | dry-run：验证流程组合定义正确性，不真正执行 |
-| `snakemake --detailed-summary <targets>` | 每个文件的状态/计划/输入输出，供用户确认规模 |
-| `snakemake --dag <targets> \| dot -Tsvg` | 导出实际 DAG 图 |
-| `snakemake --rulegraph` | 导出 rule 级依赖图（不看样本展开） |
-| `snakemake --lint` | 流程质量检查 |
-| `snakemake --list-target-rules` | 列出全部目标 rule |
-| `snakemake --rerun-incomplete` | 失败后断点续跑，不重跑已完成部分 |
-| `python agent/validate_manifests.py` | manifest / 端口 / catalog 一致性校验 |
+本规范使用「必须」「禁止」「应该」「可以」分别表示强制要求、禁止行为、推荐做法和可选能力。规范中的审批条款约束未来系统，不代表本次编辑文档需要额外审批。
 
 ---
 
-## 四、数据模型
+## 三、职责与资产边界
+
+### 3.1 三类版本化资产
+
+| 资产 | 内容 | 发布与管理 |
+|---|---|---|
+| Rule 库与 pipeline | `.smk`、运行所需 helper/scripts、manifest、配置 Schema、环境 YAML/锁文件、rule 专用校验器、测试和组合适配器 | rule 独立版本 + pipeline 发布；Git 管理源码，制品存储保存不可变打包结果 |
+| Agent 系统 | Plan Schema、编译器、通用校验框架、工具服务、审批与执行策略、CLI/UI、SDK 依赖、SOP 和组学 Skills | 与 Agent 一起管理和发布；每次构建与运行记录实际版本 |
+| 参考数据与运行记录 | FASTA/GTF/索引、输入和输出数据、项目配置快照、审批与运行证据 | 数据存储/对象存储管理；版本化 YAML 和摘要关联到运行 |
+
+**按实际依赖分类**：被 rule 执行时调用的 Python/R/shell 脚本属于 rule 的依赖；帮助 Agent 检索、编译、提交和解释结果的脚本属于 Agent 系统。通用校验引擎可随 Agent 发布，但每个 pipeline 必须锁定实际使用的引擎、策略及 rule 专用检查版本。
+
+源码与运行资料可以位于不同仓库或同一仓库的不同目录。物理布局不改变上述独立发布与锁定责任。项目敏感配置、运行日志和大型数据不要求提交到公共源码 Git。
+
+### 3.2 Agent 与确定性代码的分工
+
+- Agent：理解需求、查询库、提出计划、解释失败、生成候选修订、整理评审材料。
+- 版本解析器：解析已发布版本、传递依赖和兼容条件，生成精确锁，不由模型猜 commit 或摘要。
+- 编译器：从合法计划生成固定结构的文件；不让模型自由生成每一个生产文件。
+- 校验器：解析真实文件、计算指标、判断批准的约束、产生结构化证据。
+- 执行服务：核对版本与授权、提交任务、跟踪集群状态、限制修改范围、记录台账。
+- 专家：批准科学方案、候选 rule/pipeline 发布，以及授权之外的科学调整或异常处置。
+
+### 3.3 Build 与 Run 的写入范围
+
+Build 可以修改隔离开发目录中的候选代码和依赖，创建分支及评审包。已发布制品只读；修复必须创建新版本。
+
+Run 只读发布制品和参考源；可写单次任务的配置快照、输出、日志、缓存及 Snakemake 状态目录。不得直接编辑已发布 rule、环境锁或参考描述。发现需要代码或科学调整时转交 Build，不能以「自修复」绕过发布审核。
+
+---
+
+## 四、结构化契约与数据模型
 
 ### 4.1 Rule Manifest
 
-每个 `.smk` 模块配一个同名 manifest：`rules/manifests/<模块名>.manifest.yaml`。
+现有 `.smk` 模块可继续配一份 `rules/manifests/<module>.manifest.yaml`，内部每条 rule 从首个试点起具备独立身份和版本。以下为单条 rule 的字段示意，不是当前模板的已验证完整依赖清单：
 
 ```yaml
-# rules/manifests/03.short_read_qc.manifest.yaml
+schema_version: "1"
 module:
-  id: "03.short_read_qc"
-  title: "原始短读长质控（FastQC + MultiQC）"
-  snakefile: "rules/03.short_read_qc.smk"
-  stage: "01.qc"
-  summary: >
-    对原始 R1/R2 reads 分别运行 FastQC，并用 MultiQC 分方向聚合全部样本报告，
-    为下游去接头/质控决策提供依据。
-  requires_helpers: ["rule_resource", "logger"]
+  id: rna.short_read_qc
+  snakefile: rules/03.short_read_qc.smk
+  requires_helpers: [rule_resource, logger]
+  requires_context: [config, samples]
+  bootstrap_ref: flow.bootstrap@1.0.0
 
 rules:
-  - name: short_read_qc_r1
-    summary: "对单个样本的 R1 reads 运行 FastQC"
-    wildcards: ["sample"]
-    dynamic: false
+  - rule_id: rna.qc.short_read_qc_r1
+    version: 1.0.0
+    name: short_read_qc_r1
+    summary: 对单个样本的原始 R1 reads 运行 FastQC
+    wildcards: [sample]
+    per_sample: true
+    io_resolution: static
     inputs:
       - name: link_r1_dir
-        port: "reads.r1.fastq"
-        pattern: "00.raw_data/{md5dir}/{sample}/{sample}_R1.fq.gz"
-        config_keys: ["convert_md5"]
+        port: reads.fastq
+        attributes: {mate: R1, processing: raw, compression: gz}
+        scope: sample
+        path_binding: raw_r1
+        source: upstream
       - name: md5_check
-        port: "qc.md5_check.tsv"
-        pattern: "01.qc/md5_check.tsv"
+        port: qc.md5_check.tsv
+        path_binding: md5_gate
         role: gate
+        source: upstream
     outputs:
+      - name: r1_zip
+        port: qc.fastqc.zip
+        attributes: {mate: R1, processing: raw}
+        scope: sample
+        pattern: "01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip"
+        kind: intermediate
       - name: r1_html
-        port: "qc.fastqc.html"
+        port: qc.fastqc.html
+        attributes: {mate: R1, processing: raw}
+        scope: sample
         pattern: "01.qc/short_read_qc_r1/{sample}_R1_fastqc.html"
         kind: report
-      - name: r1_zip
-        port: "qc.fastqc.zip"
-        pattern: "01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip"
-        kind: intermediate
-    config_requires:
-      - "convert_md5"
-      - "parameter.threads.fastqc"
-    conda: "envs/fastqc.yaml"
-    resources_tier: "low_resource"
-
-  - name: short_read_qc_r2
-    summary: "对单个样本的 R2 reads 运行 FastQC"
-    wildcards: ["sample"]
-    dynamic: false
-    inputs:
-      - name: link_r2_dir
-        port: "reads.r2.fastq"
-        pattern: "00.raw_data/{md5dir}/{sample}/{sample}_R2.fq.gz"
-        config_keys: ["convert_md5"]
-      - name: md5_check
-        port: "qc.md5_check.tsv"
-        pattern: "01.qc/md5_check.tsv"
-        role: gate
-    outputs:
-      - name: r2_html
-        port: "qc.fastqc.html"
-        pattern: "01.qc/short_read_qc_r2/{sample}_R2_fastqc.html"
-        kind: report
-      - name: r2_zip
-        port: "qc.fastqc.zip"
-        pattern: "01.qc/short_read_qc_r2/{sample}_R2_fastqc.zip"
-        kind: intermediate
-    config_requires:
-      - "convert_md5"
-      - "parameter.threads.fastqc"
-    conda: "envs/fastqc.yaml"
-    resources_tier: "low_resource"
-
-  - name: short_read_multiqc_r1
-    summary: "聚合全部样本 R1 FastQC 结果为一份 MultiQC 报告"
-    wildcards: []
-    dynamic: false
-    per_sample: false
-    inputs:
-      - name: fastqc_files_r1
-        port: "qc.fastqc.zip"
-        pattern: "01.qc/short_read_qc_r1/{sample}_R1_fastqc.zip"
-        expand_over: samples
-    outputs:
-      - name: report_dir
-        port: "qc.multiqc.report"
-        pattern: "01.qc/short_read_r1_multiqc/multiqc_r1_raw-data_report.html"
-        kind: report
-    config_requires:
-      - "parameter.threads.multiqc"
-    conda: "envs/multiqc.yaml"
-    resources_tier: "low_resource"
-
-  - name: short_read_multiqc_r2
-    summary: "聚合全部样本 R2 FastQC 结果为一份 MultiQC 报告"
-    wildcards: []
-    dynamic: false
-    per_sample: false
-    inputs:
-      - name: fastqc_files_r2
-        port: "qc.fastqc.zip"
-        pattern: "01.qc/short_read_qc_r2/{sample}_R2_fastqc.zip"
-        expand_over: samples
-    outputs:
-      - name: report
-        port: "qc.multiqc.report"
-        pattern: "01.qc/short_read_r2_multiqc/multiqc_r2_raw-data_report.html"
-        kind: report
-    config_requires:
-      - "parameter.threads.multiqc"
-    conda: "envs/multiqc.yaml"
-    resources_tier: "low_resource"
+    config_requires: [convert_md5, parameter.threads.fastqc]
+    config_schema_ref: rna.qc.config@1.0.0
+    dependencies:
+      helpers: [flow.resource_manager@1.0.0]
+      environments: [env.fastqc@1.0.0]
+      validators: [validation.fastqc@1.0.0]
+    tests_ref: tests/fixtures/short_read_qc
 ```
 
-#### Schema 字段约定
+必需语义约定：
 
-| 字段 | 必填 | 含义 |
-|---|---|---|
-| `module.requires_helpers` | 是 | 该模块用到的自定义 Python helper 名列表 |
-| `rules[].port` | 是 | 语义端口类型；新类型必须先登记进 `ports.yaml` |
-| `rules[].role: gate` | 否 | 该 input 只是依赖闸门、不出现在命令里 |
-| `rules[].kind` | 是 | `report`（最终交付）/ `intermediate`（中间产物） |
-| `rules[].dynamic` | 是 | 是否动态 I/O；`true` 时 Agent 禁止静态推断 |
-| `rules[].expand_over: samples` | 否 | 该 input 对样本表全体展开（聚合 rule 标志） |
-| `rules[].config_requires` | 是 | 该 rule 读取的全部 config key 路径 |
-| `rules[].per_sample` | 是 | 是否按样本通配（决定组合时如何展开） |
+- `rule_id` 不依赖目录编号，重命名文件不改变逻辑身份；`version` 对应精确发布记录。
+- `inputs[].port`、`outputs[].port` 必须在注册表定义；生产/消费连接检查属性、样本范围、基数、参考身份和数据状态。
+- `source` 区分 `upstream` 与 `external`。原始数据、参考文件等可来自外部，不强求库内生产者。
+- `pattern` 用于可直接表达的路径；`path_binding` 引用版本化适配器。必须明确定义通配符与 config 插值，禁止把 `{md5dir}` 这类占位符同时当成两种含义。
+- `config_requires` 包含必填项；可选项、默认值、类型、枚举与条件必填由 Schema 定义。helper 和 bootstrap 的配置依赖参与合并。
+- `io_resolution` 为 `static`、`input_function` 或 `checkpoint`。旧 `dynamic` 字段需迁移映射；普通 input 函数不等于必须等待作业执行。
+- manifest 声明运行所需环境、脚本、helper、bootstrap、校验策略和测试；实际发布清单展开全部传递文件依赖。
+- `kind: report` 表示输出用途，不表示该输出自动成为用户 deliverable。
 
-### 4.2 端口注册表 `agent/ports.yaml`
+### 4.2 端口注册表与路径绑定
+
+端口匹配只是选择候选 rule 的条件，Snakemake 仍通过真实 input/output 路径构建作业 DAG。必须同时满足语义兼容与路径绑定。
+
+例如 `reads.fastq` 的 `processing: raw` 与 `processing: trimmed` 不可默认为可互换；`align.bam` 应根据用途约束坐标体系、排序状态、索引和参考版本。聚合步骤必须明确使用哪一个样本集合，不能悄悄扫描目录纳入其他运行的数据。
+
+`ports.yaml` 人工维护类型定义和兼容约束，生产者/消费者索引从发布 manifest 派生，并带 `rule_id@version`。索引中的「有生产者」不等于任何候选版本都兼容。
+
+### 4.3 产物目录与派生索引
+
+`catalog.yaml` 保存 deliverable 的 ID、名称、用途、keywords、入口或已发布 pipeline、target 模板、样本范围、前置条件和验证策略引用。
+
+Git 中的版本化 manifest、端口定义与 catalog 是相应发布的事实源；SQLite/FTS 等只作为可重建索引。发布状态与撤销记录由服务维护。查询工具默认返回紧凑摘要及版本/来源指针，详情按需读取；不把全库上下文成本承诺为固定 token 数。
+
+派生索引必须记录来源发布摘要。Run 按 lock 查确切版本，禁止索引刷新后自动替换成 latest。第一版可使用本地查询库或 CLI，再通过 MCP 暴露同一实现。
+
+### 4.4 AnalysisPlan：专家审核对象
+
+分析方案必须记录：
+
+- 研究目标、组学类型、实验方法、预期 deliverable；
+- 样本范围、分组与对照、配对关系、批次及协变量；
+- 方法、关键参数、参考数据版本、适用条件与选择依据；
+- 校验策略、阈值来源、可接受差异和异常处置；
+- 未知信息、方法假设、需要专家决定的问题；
+- 方案 ID、修订号、所用 Skill/资料版本及审批引用。
+
+缺少决定科学方案的信息时提出明确问题，不能为通过校验而编造分组、参考版本或阈值。专家审核绑定方案内容摘要；科学含义改变时重新审核。
+
+### 4.5 PipelinePlan：编译器输入
+
+Agent 提交结构化计划，不提交任意可执行代码。以下为字段示意；`<...>` 为待系统解析的占位符，正式 lock 中禁止保留：
 
 ```yaml
-# agent/ports.yaml —— 全部端口类型的中央注册表；新增端口类型必须先登记
-ports:
-  reads.r1.fastq:
-    description: "R1 reads（fastq.gz），可能为原始或去接头后"
-    producers: ["00.link_dir / trim 模块 rule 名"]
-    consumers: ["03.short_read_qc.short_read_qc_r1", "..."]
-  qc.fastqc.zip:
-    description: "FastQC 原始数据包（单样本单方向）"
-    producers: ["03.short_read_qc.short_read_qc_r1", "03.short_read_qc.short_read_qc_r2"]
-    consumers: ["03.short_read_qc.short_read_multiqc_r1", "03.short_read_qc.short_read_multiqc_r2"]
-  qc.md5_check.tsv:
-    description: "MD5 校验通过闸门文件"
-    producers: ["<md5 校验 rule 名>"]
-    consumers: ["所有直接读原始数据的 rule（role: gate）"]
+schema_version: "1"
+pipeline_id: customer_raw_qc
+revision: 1
+analysis_plan_ref: analysis-001@1
+mode: existing_entry
+base_pipeline_ref: RNAFlow@20250601
+steps:
+  - instance_id: qc_r1
+    rule_ref: rna.qc.short_read_qc_r1@1.0.0
+bindings:
+  qc_r1.link_r1_dir: input.raw_r1
+  qc_r1.md5_check: upstream.md5_pass
+targets: [raw_multiqc_r1]
+config_ref: config/project.yaml
+sample_sheet_ref: config/samples.csv
+reference_ref: references/project.yaml
+validation_policy_ref: validation.raw_qc@1.0.0
+execution_policy_ref: supervised@1
 ```
 
-`producers` / `consumers` 列由校验脚本从各 manifest 自动生成更新，人工只维护 `description`。
+计划中的 steps 可以是能力选择，解析器必须补全所需上游规则闭包，遇到多个不等价生产者要求明确选择。校验器解析完整连接和实际 target，不能因为一个示意步骤合法就视整条链完整。样本级作业展开和调度 DAG 由 Snakemake 决定，不自造调度引擎。
 
-### 4.3 产物目录 `agent/catalog.yaml`
+支持 `existing_entry` 与 `compiled_modules` 两种编译模式。计划中的路径和参数由 Schema 约束，不允许用任意 Python 表达式或 shell 文本充当绑定。
 
-```yaml
-# agent/catalog.yaml —— Agent 回答「我要 X 结果」时的查询入口
-deliverables:
-  - id: raw_multiqc_r1
-    name: "原始数据 R1 MultiQC 汇总报告"
-    description: "全部样本 R1 FastQC 聚合报告，评估原始数据质量、接头污染、批次异常"
-    targets:
-      - "01.qc/short_read_r1_multiqc/multiqc_r1_raw-data_report.html"
-    keywords: ["质控", "QC", "fastqc", "multiqc", "原始数据", "R1"]
-  - id: raw_multiqc_r2
-    name: "原始数据 R2 MultiQC 汇总报告"
-    targets:
-      - "01.qc/short_read_r2_multiqc/multiqc_r2_raw-data_report.html"
-    keywords: ["质控", "QC", "multiqc", "原始数据", "R2"]
-```
+### 4.6 发布、运行、审批与事件记录
 
-每个「用户会开口要的最终结果」一条；中间产物不进 `catalog.yaml`。
+以下记录为独立对象，通过 ID 和内容摘要关联：
 
-### 4.4 注册表索引 `agent/registry.db`
-
-**不用 MySQL**：注册表内容以 git 内 YAML 文件为唯一事实源；SQLite（含 FTS5 全文检索）只是从 YAML 构建出来的派生索引；Agent 通过 MCP 查询工具访问，不直接碰存储。
-
-| 层级 | 内容 | 说明 |
-|---|---|---|
-| 事实源（git 管理） | `rules/manifests/*.manifest.yaml` + `agent/ports.yaml` + `agent/catalog.yaml` | 人评审，可 diff |
-| 派生索引（`.gitignore`） | `agent/registry.db`（SQLite） | 由 `agent/build_registry.py` 自动重建 |
-| 访问层（MCP 工具） | `query_rules` / `search_rules` / `query_catalog` | Agent 唯一入口 |
-
-`registry.db` 结构：
-
-- 普通表：`rules` / `ports` / `deliverables`（结构化精确查询）
-- FTS5 虚拟表：`rule_search`（summary / docstring / keywords 全文检索）
-
-**语义搜索现阶段不引入向量数据库**：几百条规模的注册表，LLM 自身即可完成语义匹配。`query_catalog` 返回全部 deliverable 的紧凑摘要（id + name + description + keywords，约几百 token），由模型做「我要差异表达 → 哪个 deliverable」的判断。rule 级语义匹配同理。
-
-真到需要向量检索时（库超数千条，或 token 成本敏感），升级路径是 `sqlite-vec`（同一文件内加向量列，无新服务）；平台化、多用户共享注册表时，再考虑 PostgreSQL + pgvector，或把 `registry.db` 同步进平台既有 MySQL 做浏览界面——但那只是同步目标，唯一事实源永远是 git 里的 YAML。
-
-### 4.5 缺口日志 `agent/gap_log.yaml`
-
-每次「端口断链 / 缺 rule / 缺 deliverable」事件必须记录进 `agent/gap_log.yaml`，字段包括：
-
-- 时间
-- 需求描述
-- 缺的端口或 deliverable
-- 出现次数
-
-高频缺口是专家下一个该策展的 rule，避免凭感觉决定库的增长方向。
-
-### 4.6 运行台账 `run ledger`
-
-每次 dry-run、提交、报错、修复、人工决策必须全量记录为 JSONL。字段至少包括：
-
-- 时间戳
-- 任务 ID
-- 操作类型（dry_run / submit / error / fix / human_decision）
-- 操作对象（target、组合 Snakefile 路径、rule 名）
-- 结果或报错摘要
-- 用户确认标记
-
-`run ledger` 是审计轨迹，也是未来发文章/报项目的素材。
-
----
-
-## 五、一致性校验
-
-### 5.1 校验脚本 `agent/validate_manifests.py`
-
-必须实现的检查（任一失败即退出码非 0，输出具体到文件与字段）：
-
-1. 每个 manifest 的 rule 名、input/output pattern 与对应 `.smk` 实际内容一致（解析 Snakefile 比对字符串）；
-2. `config_requires` 覆盖 `.smk` 中全部 `config[...]` 读取；
-3. manifest 用到的每个 port 类型已登记在 `ports.yaml`；
-4. `catalog.yaml` 中每个 target 能被某个 rule 的 output pattern 匹配；
-5. 每个端口的 producers/consumers 双向闭合（消费者声明的端口必有生产者，或标注为「外部输入」如原始数据）。
-
-接入方式：作为 git pre-commit 钩子 + CI 步骤；Agent 每次改完流程也必须先跑它（写进 SOP）。
-
-### 5.2 校验与索引构建的关系
-
-`build_registry.py` 与 `validate_manifests.py` 共用 YAML 解析。构建 `registry.db` 前必须先跑校验，校验不过不建库——索引永远不会比事实源「更正确」。
-
-`registry.db` 加入 `.gitignore`；README 注明「删掉重建：`python agent/build_registry.py`」。
-
----
-
-## 六、Agent 编排规范
-
-### 6.1 决策流程
-
-```
-收到分析需求
-  │
-  ├─ ① 查 agent/catalog.yaml —— 有现成 deliverable？
-  │      └─ 有 → 取其 targets → 跳到 ④
-  │
-  ├─ ② 查 agent/ports.yaml + rules/manifests/ —— 端口能串成完整链？
-  │      └─ 能 → 生成组合 Snakefile（见 6.2），定义新 target → 跳到 ④
-  │
-  ├─ ③ 端口断链
-  │      ├─ 缺中间 rule → 写新 rule 草案（遵守 manifest_spec 与目录命名约定）
-  │      │              → 交人工确认 → 入库（.smk + manifest 同步新增）→ 回 ②
-  │      └─ 缺数据源 → 报告缺什么外部输入，停止，不猜测
-  │
-  ├─ ④ 生成/修正 sample sheet 与 config
-  │      └─ 用 validate_manifests.py + config_requires 合并校验，缺 key 先补齐
-  │
-  ├─ ⑤ snakemake -n <targets>（dry-run）
-  │      └─ 报错 → 按 6.3 对策表修复 → 重跑本步（同一报错连续失败 2 次则停止并报告）
-  │
-  ├─ ⑥ snakemake --detailed-summary <targets> → 交用户确认规模
-  │
-  └─ ⑦ 正式运行；失败 → 读对应 rule 的 log → 修复 → --rerun-incomplete 续跑
-```
-
-### 6.2 组合 Snakefile 约定
-
-- **位置**：`composed/<日期>_<需求简述>/Snakefile`，每次组合一个新目录，永不覆盖旧目录（可回溯）。
-- **骨架固定**：
-
-```python
-include: "../../rules/common.smk"          # 隐性 helper 唯一来源，必须第一行
-configfile: "../../config/config.yaml"     # 或本目录内生成的副本
-
-module qc:
-    snakefile: "../../rules/03.short_read_qc.smk"
-    config: config
-
-use rule short_read_qc_r1 from qc as qc_short_read_qc_r1
-use rule short_read_multiqc_r1 from qc as qc_short_read_multiqc_r1
-# …按需 use rule，命名空间前缀避免 AmbiguousRuleException
-
-rule all:
-    input: "<本组合的最终 target>"
-```
-
-- **禁止**复制粘贴库中 rule 本体进组合文件；一律 `use rule` 引用。
-
-### 6.3 常见报错对策
-
-| 报错 | 含义 | 对策（按优先级） |
-|---|---|---|
-| `MissingInputException` | 某输入没有 rule 能产出 | 查 `ports.yaml` 找该端口生产者 → 检查是否漏 `use rule` → 检查样本表路径 |
-| `AmbiguousRuleException` | 两个 rule 产出同一 pattern | 给组合文件加 `ruleorder`，或改用带前缀的 `use rule ... as ns_*` |
-| `WildcardError` | 通配符值不在样本表 | 修样本表，不改 rule |
-| `KeyError`（config） | config 缺 key | 对照 manifest 的 `config_requires` 补 config |
-| `CyclicGraphException` | 依赖成环 | 检查组合选择，去掉造成环的 rule |
-| 运行期报错（log 中非零退出） | rule 内部命令失败 | 读该 rule 的 log 定位 → 修参数/环境 → `--rerun-incomplete` 续跑 |
-
-### 6.4 禁区铁律
-
-1. **修改优先级**：样本表 > config > 组合 Snakefile > 新增 rule > 已有 rule。已有 rule 的任何改动必须人工确认。
-2. dry-run 未通过前，禁止提交正式任务到集群。
-3. `dynamic: true` 的 rule，禁止凭读代码断言其 I/O，只许 dry-run 实测。
-4. 正式运行失败后的续跑一律 `--rerun-incomplete`，禁止全量重跑。
-5. 每次改动后先跑 `python agent/validate_manifests.py`，通过后再继续。
-6. 同一报错连续修复 2 次仍失败，停止尝试，把报错、已试方案、log 摘要报告给用户。
-
-### 6.5 渐进式披露与检索层
-
-#### 维护分工
-
-| 文件 | 维护粒度 | 何时要碰它 | 量级 |
-|---|---|---|---|
-| `rules/manifests/*.manifest.yaml` | 按 rule | 新增/修改 rule 时（与代码同提交，pre-commit 强制校验） | 每模块一份，几十~几百行 |
-| `agent/ports.yaml` | 按端口类型 | 仅当引入新端口类型时；producers/consumers 由脚本自动刷新 | 全库几十条 |
-| `agent/catalog.yaml` | 按终端 deliverable | 新增最终产物时 | 全库十几~几十条 |
-
-日常维护成本主要在 manifest，它就放在模块旁边、随代码一起评审。`ports.yaml` 和 `catalog.yaml` 是小而稀疏的索引层，rule 的 I/O 细节只写在 manifest 一处，另两个文件的内容由 `build_registry.py` 自动聚合派生。
-
-#### 三层加载
-
-```
-L0（常驻上下文，~500 token）
-  system prompt：SOP + "有 catalog/ports/manifests 可查"的一句话索引
-
-L1（工具查询返回紧凑摘要，每条 30~60 token）
-  query_catalog(keyword) → [{id, name, 一句话描述}, ...]
-  query_ports()          → [{port, 一句话描述, scope}, ...]
-  query_rules(produces_port=X) → [{rule, module, summary}, ...]
-  ※ 每条记录附带 source_ref："rules/manifests/03.short_read_qc.manifest.yaml#rules[name=short_read_qc_r1]"
-
-L2（按需取详情，仅组链真正用到时）
-  get_rule(rule_name)    → 该 rule 的完整 manifest 条目
-                           （patterns / config_requires / dynamic 标记等）
-  read_manifest(module)  → 整个模块 manifest（极少用）
-```
-
-token 预算估算（200 rule / 30 deliverable / 40 端口的中型库）：
-
-| 加载方式 | token 成本 |
+| 对象 | 必需记录 |
 |---|---|
-| 全量塞上下文（反模式） | 数万~十万+ |
-| L1 摘要检索（catalog + 命中端口 + 候选 rule） | ~1,000~2,000 |
-| L2 按需取 3~5 个 rule 详情 | ~500~1,000 |
-| **实际每次任务总开销** | **约 2,000~3,000，且与库规模基本无关** |
+| rule release | rule 身份/版本、源码 commit、模块、文件与依赖摘要、环境锁、验证证据和发布审核 |
+| pipeline release | 组合定义、rule 精确依赖锁、编译器/模板、编译产物、参数约束、验证与审核 |
+| run.lock.yaml | 发布身份、实际 rule/环境/参考锁、有效配置、样本表和输入清单、执行环境、策略与授权 |
+| approval | 审批人、时间、被审批对象摘要、决定、授权范围、限制和有效条件 |
+| ledger | 事件 ID/顺序、run/attempt ID、动作、对象摘要、证据引用、结果、审批引用和集群 job ID |
+| gap log | 缺口类型、需求、缺失能力/数据、来源、重复次数和后续评审关联 |
 
-#### 实现要点
+run lock 必须保存合并默认值和命令行覆盖后的有效配置，不能只保存项目 YAML 路径。日志与摘要应去除凭据；身份记录不保存访问密钥。
 
-1. `registry.db` 同时存紧凑摘要字段与 `source_ref` 指针（文件路径 + YAML 定位），摘要与详情同源构建，不会互相矛盾；
-2. MCP 工具默认只返回摘要，详情必须显式调用 `get_*` 工具——把「按需加载」做在工具层而不是指望 Agent 自觉；
-3. **唯一需要认真写的地方是 description/keywords**：检索命中率完全取决于摘要质量（中英文常用说法都收进 keywords）；详情写得再好，摘要不行就永远检索不到。
-
----
-
-## 七、Rule 库增长与治理
-
-### 7.1 增长机制
-
-```
-新分析需求 → Agent 组链 → 端口断链（记录进 gap log）
-    → Agent 起草新 rule + manifest → 生成「评审包」→ 生信专家评审
-    → 通过：入库（.smk + manifest + 测试）→ 库覆盖增长 → 下次同类需求直接命中
-    → 驳回：专家修正意见回填 → 修正后复审；修正记录保存为 Agent 的 few-shot 范例
-```
-
-双增长效应：库在长大的同时，**专家修正记录持续变成 Agent 起草新 rule 的参考范例**，草案质量随轮次上升，专家评审工作量随之下降——HITL 文献证实「跟踪专家评审后的 AI 输出可用于指导模型重训、提示词精炼或微调」。
-
-### 7.2 入库门禁
-
-nf-core 模式的核心不是「模块多」，而是每个模块带 CI 与评审。一条坏 rule 入库会污染之后所有组合（Agent 无条件信任库），因此入库必须过五关：
-
-1. manifest 齐全且 `validate_manifests.py` 通过；
-2. 附带最小测试数据 + 预期输出；
-3. dry-run 通过；
-4. 小规模真实运行通过且输出与预期一致；
-5. 专家评审 checklist 签字（对应 WorkflowHub 生命周期的 Test & Review 阶段）。
-
-入库后由 CI 定期复测（LifeMonitor 模式：自动化持续测试 + 通过/失败徽章），工具版本升级导致失效的 rule 自动降级为「待修复」，Agent 组链时禁用。
-
-### 7.3 评审包标准
-
-专家瓶颈是增长机制的最大风险，评审材料必须标准化为一个「评审包」：
-
-- rule diff 与 manifest yaml；
-- 一句话用途 + 上下游端口说明；
-- dry-run 输出摘要（DAG 片段）；
-- 最小测试运行结果与预期输出 diff；
-- Agent 起草时的参考来源（改自哪个已有 rule / 官方文档链接）。
-
-### 7.4 缺口日志
-
-见 4.5。
-
-### 7.5 预期管理
-
-- 常用分析步骤（QC、trim、比对、定量、差异表达）收敛很快，「覆盖大部分分析流程」对这 80% 成立；
-- 长尾（新工具、非常规设计）永远存在——库不会「转完」，它是活资产，需要持续维护与 CI 复测，不是建一次就一劳永逸；
-- 失败案例与「专家修正 vs Agent 草案」的分歧案例要回收入回归测试集（golden set），作为 Agent 能力是否进步的守门员。
+事件只追加，按 run 分区并处理并发。审批由身份可信的服务写入，Agent 无权自行设置 `approved: true`。模型输出、工具 stdout 和日志中的指令一律不能当作批准。
 
 ---
 
-## 八、实现形态
 
-### 8.1 三级演进
+## 五、版本治理
 
-最终体验确实是「一个 Agent 在干活」，但实现上「Agent」不是自造的程序，而是**通用编码 Agent + 本仓库资产**组合出来的效果。按三级演进，每层复用上层资产。
+### 5.1 Rule 版本
 
-#### 第 1 级：仓库即 Agent（现在，阶段 0~3 完成即达成）
+每个 rule 从首次进入受管库开始使用稳定 `rule_id` 和语义版本：
 
-- 形态：`AGENTS.md`（SOP）+ `manifests/ports/catalog`（知识）+ `validate/dry-run` 脚本（工具）。
-- 依据：`AGENTS.md` 已是跨工具开放标准（60,000+ 仓库采用，Codex/Cursor/Copilot/Gemini CLI/Aider 等 20+ 工具原生读取），研究证实它把 Agent 引导从一次性提示词变成「版本可控、可审查、可协作维护的配置资产」。任何通用编码 Agent 进入仓库即「变成」领域 Agent，零新增开发。
-- 注意：业界抽样显示 68% 的 `AGENTS.md` 缺安全/审批条款——本方案的「禁区六条」恰好补这个洞，必须保留在文档顶部。
+- MAJOR：输入输出端口、语义、科学假设或不兼容行为改变；
+- MINOR：兼容地增加可选能力或输出；
+- PATCH：修复实现、日志、资源或兼容性问题，不改变接口和科学含义。
 
-#### 第 2 级：薄 MCP server（禁区需要硬化时）
+rule 的不可歧义身份是 `rule_id + source_commit`，版本号是可读标签。发布后禁止移动 tag 或复用版本号。更改 `.smk`、manifest、helper、脚本、环境定义、锁文件、Schema、适配器或 rule 专用校验器时，必须评估是否需要新 rule 版本；有关联变更必须一个原子提交或具备明确依赖链。
 
-- 触发条件：提示词级软约束不够，需要机制级硬约束。
-- 形态：把少量高价值操作封装为 MCP 工具（6~8 个为宜）：
-  `query_catalog` / `query_ports` / `validate_manifests` / `dry_run` / `read_log` / `write_gap_log` / `submit_cluster`。
-- 关键收益：**硬约束**——`submit_cluster` 在无通过的 dry-run 记录时直接拒绝，把「dry-run 未过禁止提交」从「请求 Agent 遵守」变成「工具层不可能违反」。MCP 的进程隔离与权限作用域是其相对 skill 的核心价值。
-- 成本控制：MCP 工具 schema 全量加载吃 token（50 个工具约 8,000 token，同等 skill 约 400）——工具保持少而精，不要把每个 shell 命令都包一层。
+每个 Rule Release Bundle 必须包含：
 
-#### 第 3 级：自建 Agent 应用（无人值守 / 平台化时）
-
-- 触发条件（任一）：定时/无人值守自动化；接入自有平台对外提供服务；需要独立的权限、记忆、审计表面。
-- 判断标准：流程不一致 → 写 skill；缺一个有自己的访问权限、记忆与运行表面的 worker → 才造 custom agent。成熟系统两者兼有：custom agent 管运行时与权限，skill 管可复用流程。
-- 即便到这一级，`AGENTS.md` / manifests / SOP / MCP 工具全部复用，无返工。
-
-**心智模型**：skill / `AGENTS.md` 是菜谱（知识层：告诉 Agent 怎么做），MCP 是厨房（连接层：让 Agent 真能做）。本方案第 1 级先发菜谱，第 2 级再配厨房，第 3 级才开餐厅。
-
-### 8.2 自建 Agent 架构
-
-若用户明确要求做成独立的 Agent 程序，则遵循以下架构：
-
-```
-用户（自然语言需求）
-   │
-   ▼
-┌──────────────────────────┐
-│ RNAFlow Agent（CLI 优先） │
-│  ├ 循环底座：Agent SDK    │ ← 不手写 LLM 循环
-│  ├ 大脑：SOP 蒸馏 system  │
-│  │  prompt + 按需检索     │
-│  └ 手：本地 MCP server    │
-└──────────┬───────────────┘
-           │ 工具调用
-   ┌───────┴────────────────────────────┐
-   │ query_catalog / query_ports        │  ← 查产物目录与端口注册表
-   │ validate_manifests                 │  ← 一致性校验
-   │ dry_run / summary                  │  ← snakemake -n 封装（带记录）
-   │ read_log                           │  ← 读 rule 日志
-   │ write_gap_log                      │  ← 缺口日志
-   │ submit_cluster（硬约束）            │  ← 无 dry-run 通过记录则拒绝
-   └───────┬────────────────────────────┘
-           ▼
-   RNAFlow 仓库（.smk 库 + manifests + config/样本表）
-           │
-           ▼
-   run ledger（运行台账：每次 dry-run/提交/修复全记录）
+```text
+rules/*.smk
+rules/manifests/*.yaml
+rules/utils 与 rule 使用的 scripts
+envs/*.yaml 与平台 lock
+schema/ 与 rule 配置约束
+validators/
+tests/fixtures 与预期结果
+release.yaml
 ```
 
-**原则**：资产是大脑，Agent 是外壳——manifest/catalog/ports/校验器/SOP 仍是核心决策依据，Agent 程序只是把「通用 Agent 读文件干活」变成一个专门的、可分发的产品。阶段 0~2 的资产建设仍是关键路径，Agent 外壳可在阶段 1 完成后并行开工。
+“同一个文件版本”不能替代依赖闭包版本。发布清单必须列出所有传递依赖的 `id@version` 和内容 SHA-256。
 
-### 8.3 SDK 选型
+### 5.2 环境版本
 
-经验法则：决策点超过 3~4 个或需要持久状态就用框架，不要手写 tool-calling 循环（本方案的 SOP 决策树有 7 步，远超阈值）。
+Conda YAML 必须纳入 rule 或 pipeline 的发布依赖。推荐：
 
-| 候选 | 适配度 | 理由 |
-|---|---|---|
-| **Claude Agent SDK（首选）** | ★★★★★ | 把 Claude Code 的生产验证循环当库用：内建文件/shell 工具、hooks、权限系统、会话、AskUserQuestion 人工闸门、in-process MCP 工具——「给一个 agent 一台电脑并约束它能做什么」正是本场景。代价：锁定 Claude 模型。 |
-| LangGraph（备选） | ★★★★ | 需要模型自由、显式状态机、崩溃可恢复的持久检查点时选它；代价：文件/shell/MCP 都要自己接，模板代码量大（50+ 行起步）。 |
-| OpenAI Agents SDK | ★★★ | 轻量 handoff 编排，适合「多 Agent 对话路由」型产品，与本场景（单 Agent 深度操作环境）匹配度一般。 |
+```text
+envs/fastqc.yaml              # 人维护的直接依赖声明
+envs/locks/fastqc.linux-64.lock  # 完整解析锁
+```
 
-选型结论：**Claude Agent SDK + 本地 MCP server**。版本钉死（0.x 线几乎日更），若未来必须换模型底座，资产（大脑与工具）零改动，只换循环层。
+环境版本独立编号，但在 release 中被精确引用：
 
-### 8.4 界面与人工闸门
+```yaml
+environment_id: env.fastqc
+version: 1.0.0
+spec_file: envs/fastqc.yaml
+lock_files: [envs/locks/fastqc.linux-64.lock]
+spec_sha256: "..."
+lock_sha256: "..."
+```
 
-- **界面决策：CLI 优先**：生信主战场是服务器/HPC（SSH 会话），CLI 天然契合，也便于接 cron 与平台后端；Web UI / 平台集成是外壳的第二次迭代，不影响内核。
-- **交互模式**：`rnaflow-agent "对这批新样本做质控和比对"` → Agent 按 SOP 走完决策树 → 关键节点（提交集群前、新 rule 入库前）停下来问人。
-- **两个不可省的人工闸门**：
-  1. `submit_cluster` 前：必须存在本任务的 dry-run 通过记录（工具层硬约束）+ 用户确认计算规模（summary 输出）。
-  2. 新 rule 入库前：生成评审包，专家评审签字（见 7.3）。
-- **一个差异化资产**：`run ledger` 记录每次 dry-run、提交、报错、修复、人工决策——审计轨迹是差异化卖点，也是未来发文章/报项目的素材。
+必须记录 Snakemake、插件、容器/Conda 前端和目标平台版本。YAML 修改、锁文件重建、通道优先级或平台改变，都要重新测试；影响 rule 结果或可运行性的环境变化不能静默覆盖旧环境。重要发布应缓存镜像或包制品，避免多年后源不可用。
 
-### 8.5 诚实预期
+### 5.3 Pipeline 版本
 
-demo → production 的可靠性鸿沟（95% → 99%）在所有框架上都需要 5~10 倍工程量；本方案把大头（契约、校验、SOP、门禁）前置为资产建设，是把这 5~10x 花在刀刃上的方式，而不是绕开它。
+Pipeline Release 是组合逻辑和依赖的不可变快照：
 
----
+```yaml
+pipeline_id: RNAFlow-qc-mapping
+version: 2026.06.01
+repository_commit: abc123
+compiler:
+  id: flow.pipeline_compiler
+  version: 1.0.0
+rules:
+  - rule_ref: rna.raw.check_md5@1.1.0
+  - rule_ref: rna.qc.short_read_qc_r1@1.0.0
+environments:
+  - env.fastqc@1.0.0
+references:
+  - reference.hg38.star@2026.05.15
+validation_policies: [rna.qc.outputs@1.0.0]
+```
 
-## 九、阶段化实施
+发布后 pipeline lock、组合 Snakefile、有效默认配置、测试证据和 review 记录不可变。客户“换样本/路径”生成新的 run，不改变 pipeline 版本；改变 rule 组合、科学参数、参考数据、环境或验证策略时创建新的 pipeline revision/release。
 
-以下阶段把规范转化为可实施、可验收的任务。每阶段完成并验收后，再进入下一阶段。
+### 5.4 Agent 与 Skills 版本
 
-### 9.1 阶段 0：流程现状审计（只查不改）
+Agent 系统另行发布，例如：
 
-**目标**：产出一份证据化的现状报告，回答：库里有多少模块/rule、I/O 路径约定是否一致、config key 全集、隐性 helper 依赖、动态 rule 分布、当前入口 Snakefile 如何组织。它是阶段 1~3 的事实基础，也是拿回报告后逐项核对的 checklist 基准。
+```yaml
+agent_release: flow-agent@1.3.0
+compiler: flow-compiler@1.1.0
+validator_engine: flow-validator@1.0.0
+skills:
+  - bulk-rna@2.0.0
+  - qc-interpretation@1.1.0
+```
 
-**交付物**：
+组学 Skill 提供方案模板、方法适用条件、异常解释和校验策略引用；它不能直接放宽执行权限，也不能替代校验器。每次 Build/Run 的 lock 必须记录实际使用的 Agent、compiler、validator、Skills 与策略版本。
 
-1. 「模块 × rule」清单表（含 docstring 一句话摘要、文件：行号）；
-2. 跨模块衔接文件表（pattern → 生产者 → 消费者）；
-3. config key 全集表（key → 使用方 rule 列表）；
-4. 动态 rule / 隐性依赖清单（按「组合时高风险/中风险/低风险」分级）；
-5. 样本配对信息现状描述（换配对的操作步骤现状）。
+### 5.5 参考数据与对象存储
 
-**验收标准**：
+参考 FASTA、GTF、索引和其它大型固定文件放在对象存储是推荐方案。使用内容不可变 URI、对象存储版本 ID 或内容摘要，不能只写会被覆盖的 `s3://bucket/hg38/latest`。
 
-| 操作 | 期望现象 | 不通过的处理 |
-|---|---|---|
-| 抽查报告中 3 条「生产者→消费者」衔接记录 | 文件路径与行号能对上实际代码 | 修正并全量复核该表 |
-| 抽查 config key 表中的 2 个 key | 列出的使用方与实际 grep 结果一致 | 同上 |
-| 检查动态 rule 清单 | 与 `grep -n "checkpoint\|lambda\|unpack" rules/` 结果一致 | 补全漏项 |
-| 通读「换配对操作步骤现状」 | 与实际操作经验一致 | 口头纠正后修订该节 |
+```yaml
+reference_id: reference.hg38.star
+version: 2026.05.15
+objects:
+  - uri: s3://flow-reference/hg38/star/2026.05.15/index.tar.zst
+    object_version_id: "..."
+    sha256: "..."
+  - uri: s3://flow-reference/hg38/annotation/2026.05.15.gtf.gz
+    sha256: "..."
+metadata: {genome: hg38, annotation: GENCODE_v47, index_tool: STAR_2.7}
+```
 
-### 9.2 阶段 1：Manifest 规范定义 + 单模块试点
+下载到运行目录后再次校验 hash；URI、对象版本、解压目录和构建工具版本写入 run lock。对象不可用或摘要不符时停止，不能自动改用 latest。
 
-**目标**：定稿 rule manifest 的 YAML schema（这是全方案的「宪法」，先小范围验证再推广），并用现有模块 `rules/03.short_read_qc.smk` 做第一个试点。
+### 5.6 升级、历史运行与回退
 
-**交付物**：
+历史 release 必须可读取且禁止原地修改。Agent 根据客户记录查找原 pipeline release，创建隔离 checkout/workspace，解析对应 rule、环境锁和参考对象，生成新的 run lock 和输出目录，然后照常执行预检、dry-run 和授权。
 
-1. `rules/manifests/03.short_read_qc.manifest.yaml`；
-2. `docs/manifest_spec.md`（中文字段说明 + 一个最小示例 + 常见错误示例 3 条）。
+```text
+客户任务 → pipeline@2025.06.01 → commit/lock/reference@固定版本
+                    ↓
+          新 run_id + 新输出目录 + 新 ledger
+```
 
-**验收标准**：
-
-| 操作 | 期望现象 | 不通过的处理 |
-|---|---|---|
-| 逐条 diff manifest pattern 与 `.smk` 字符串 | 完全一致 | 退回修正，要求附 diff 证据 |
-| `grep -n "config\[" rules/03.short_read_qc.smk` 对照 `config_requires` | 无遗漏 | 退回补全 |
-| 拿着 spec 文档让一个不懂流程的人（或另一个 Agent）复述写法 | 能复述且不出错 | 补充 spec 的示例与错误案例 |
-
-### 9.3 阶段 2：全库 Manifest + 端口注册表 + 产物目录 + 漂移校验
-
-**目标**：把试点验证过的 schema 推广到全部模块，并建成 Agent 组链所需的另外两件套：**端口注册表（ports.yaml）** 与 **需求→target 产物目录（catalog.yaml）**，外加一个防止 manifest 与代码漂移的一致性校验脚本。
-
-**交付物**：
-
-1. `rules/manifests/` 下其余每个 `.smk` 模块的 manifest；
-2. `agent/ports.yaml`（producers/consumers 自动从 manifest 提取，description 人工维护）；
-3. `agent/catalog.yaml`（从各模块 `kind: report` 的 output 中挑选用户会直接开口要的最终交付物）；
-4. `agent/validate_manifests.py`（包含 5.1 中的 5 项检查；`--fix` 模式下自动刷新 `ports.yaml` 的 producers/consumers）；
-5. git pre-commit 钩子接入 `validate_manifests.py`。
-
-**验收标准**：
-
-| 操作 | 期望现象 | 不通过的处理 |
-|---|---|---|
-| 运行 `python agent/validate_manifests.py` | 退出码 0，全库通过 | 按报错逐条修复后重跑 |
-| 故意把某 manifest 的 pattern 改错一个字符再跑校验 | 脚本报错并指出文件与字段 | 修脚本 |
-| 任选 catalog 中 3 个 target 跑 `snakemake -n` | 均能解析出合理 DAG | 查 target 或样本表 |
-| 通读「待人工确认清单」 | 每条都能当场拍板 | 拍板后回填 |
-
-### 9.4 阶段 3：Agent 组合 SOP 与组合运行环境
-
-**目标**：产出一份给 AI Agent 读的操作手册（`AGENTS.md`，等价于给 Agent 的 skill 文件），让它面对新需求时按固定决策树行动；同时把「组合 Snakefile」的运行环境约定固化下来。
-
-**交付物**：
-
-1. 仓库根目录 `AGENTS.md`，内容包含：项目一句话简介、目录结构图、决策流程（6.1）、组合 Snakefile 约定与骨架（6.2）、报错对策表（6.3）、禁区六条（6.4，置于文档顶部「铁律」一节）、感知器官命令速查（3.6）；
-2. `composed/` 目录与 `composed/README.md`（说明该目录用途与命名规范）；
-3. 示例组合 `composed/example_qc_only/Snakefile`（只跑 `03.short_read_qc` 的 multiqc target），并留存 `dry_run.txt`。
-
-**验收标准**：
-
-| 操作 | 期望现象 | 不通过的处理 |
-|---|---|---|
-| 通读 `AGENTS.md`，逐条点击其中的文件路径 | 全部真实存在 | 修正文档 |
-| 查看 `composed/example_qc_only/dry_run.txt` | 含合理的 Job 统计与 DAG 计划 | 重跑 dry-run 排查 |
-| 把 `AGENTS.md` 喂给一个没参与建设的 Agent，口述一个新需求 | 它能按决策树走到 dry-run 步 | 记录卡在哪步，补 `AGENTS.md` |
-
-### 9.5 阶段 4：端到端验收（三个场景）
-
-本阶段是「人考 Agent」：你扮演用户提需求，观察 Agent 是否按 SOP 完成。每个场景独立验收，全过才算整套能力实施完成。
-
-#### 场景 A：换配对信息（低难度，验证 config 层）
-
-- **操作**：准备一份新样本表（新样本名 + 新 R1/R2 路径），对 Agent 说「用这批新样本重新出原始数据质控报告」。
-- **期望现象**：Agent 只改样本表/config → dry-run 通过 → summary 交你确认 → 产出 MultiQC 报告；全程不改任何 `.smk`。
-- **不通过的处理**：若 Agent 动了 rule，对照禁区铁律第 1 条退回；若 dry-run 报样本相关错，检查样本表格式并把它加入 `AGENTS.md` 的样本表规范一节。
-
-#### 场景 B：新流程组合（中难度，验证端口层）
-
-- **操作**：提一个库里 rule 都具备、但从未这样连过的需求（例如「只对这些样本做质控 + 比对，不做定量」，或「把 trim 后的 reads 也过一遍 FastQC 对比」）。
-- **期望现象**：Agent 查 catalog 无果 → 查 ports/manifests 组链 → 生成 `composed/<日期>_<需求>/Snakefile`（use rule 引用，无复制粘贴）→ dry-run 通过 → 产出目标文件。
-- **不通过的处理**：端口匹配选错说明 `ports.yaml` 描述不够，补 description；组合文件违反骨架约定，把反例加进 `AGENTS.md`。
-
-#### 场景 C：注入故障自修复（高难度，验证回路层）
-
-- **操作**：故意制造一个故障（如删掉一个中间文件、在 config 里删掉一个 key、给样本表填一个不存在的路径），让 Agent 继续推进流程。
-- **期望现象**：Agent 通过 dry-run 报错或 log 定位到根因 → 按对策表修复（优先级正确）→ `--rerun-incomplete` 续跑成功；同一报错不反复撞墙超过 2 次。
-- **不通过的处理**：把该故障现象与正确对策增补进 6.3 对策表；若 Agent 试图全量重跑，强化禁区第 4 条措辞。
-
-### 9.6 阶段 5：Agent 外壳脚手架（可选，与阶段 1 后并行）
-
-若决定自建独立 Agent 程序，在阶段 1 完成后即可并行开工。
-
-**交付物**：
-
-1. Claude Agent SDK 脚手架 + 本地 MCP server；
-2. 7 个 MCP 工具：`query_catalog` / `query_ports` / `validate_manifests` / `dry_run` / `read_log` / `write_gap_log` / `submit_cluster`；
-3. CLI 命令 `rnaflow-agent`；
-4. `run ledger` JSONL 记录。
-
-**硬约束**：
-
-1. `submit_cluster`：调用时检查 `run ledger` 中本任务是否存在通过的 dry_run 记录，不存在则拒绝执行并返回原因。
-2. `dry_run` 工具内部封装 `snakemake -n <targets>`，返回结构化结果（成功/失败 + 报错文本 + job 统计），并把结果写入 `run ledger`。
-3. 所有工具只读仓库，唯一的写操作是：`composed/` 下新建组合文件、config/样本表副本、`run ledger`、gap log——其余路径只读。
-
-**验收标准**：
-
-| 操作 | 期望现象 | 不通过的处理 |
-|---|---|---|
-| 跑最小端到端命令 | 查目录→dry-run→等确认，全流程无人工提示词补丁 | 看 ledger 定位卡在哪一步，补工具或 system prompt |
-| 诱导直接提交集群 | 工具层拒绝并说明缺 dry-run 记录 | 硬约束没落实，退回重做 |
-| 断网/拔 API key 后重启 | 已在跑的流程状态可从 ledger 恢复上下文 | 检查 ledger 记录粒度 |
+回退是“选择旧发布版本创建新运行”，不是把当前开发分支执行 `git reset`，也不是覆盖已有结果。若要把旧版本输出用于比较，必须记录输入相同与否、结果校验策略及差异报告。
 
 ---
 
-## 十、风险与回退
+## 六、校验与结果质量
 
-| 风险 | 影响 | 应对 |
-|---|---|---|
-| manifest 与代码漂移（改了 `.smk` 忘改 manifest） | Agent 拿错误契约组链，越跑越偏 | `validate_manifests.py` 进 pre-commit + CI；漂移即构建失败 |
-| 全库 manifest 编写工作量大 | 阶段 2 延期 | 按模块使用频率分批：高频模块先建，低频模块标「未建档」，Agent 对未建档模块禁用自动组链 |
-| 动态 rule（checkpoint 等）行为不可静态预测 | 组链错误 | manifest 打标 + 只许 dry-run 实测（禁区第 3 条） |
-| Agent 生成的组合 Snakefile 质量不稳 | dry-run 撞错频繁 | 骨架模板固定 + 报错对策表 + 同一报错 2 次熔断 |
-| 算力误消耗（Agent 直接提交大任务） | 集群资源浪费 | 禁区第 2 条：dry-run 未过禁止提交；summary 必须人工确认 |
-| 端口类型设计不当（太粗/太细） | 组链匹配率低或误配 | 阶段 1 试点时定 3~5 个端口验证手感，再推广 |
+### 6.1 四级验证门
 
-**回退原则**：任何阶段出问题，已建成的 manifest/catalog/校验脚本仍是纯文档与工具，不影响现有流程正常运行——本方案对 `.smk` 库是**增量叠加，不是改造**。
+1. **契约验证**：manifest schema、端口属性、配置必填项、依赖闭包和静态漂移检查。
+2. **工作流验证**：Snakemake 加载、目标解析、实际 DAG、`--dry-run`、资源与路径预检。
+3. **执行验证**：最小 fixture 或项目运行中的工具退出码、日志、输出存在性、格式、样本集合和参考身份。
+4. **科学结果验证**：按批准的 validation policy 检查指标、阈值、允许差异、质量报告和关键统计结果。
+
+前三级通常可自动执行。第四级由版本化策略和校验器执行；发现需要科学判断的 WARN/NEEDS_REVIEW 时提交专家，而不是由模型自行宣布通过。
+
+### 6.2 Validation Policy
+
+```yaml
+policy_id: rna.qc.outputs
+version: 1.0.0
+applies_to: [rna.qc.short_read_qc_r1@">=1,<2"]
+checks:
+  - id: sample_ids_match
+    validator: matrix_sample_ids
+    severity: error
+  - id: alignment_rate
+    validator: star_metrics
+    thresholds_ref: analysis_plan
+    severity: review
+  - id: count_matrix_contract
+    validator: count_matrix_structure
+    severity: error
+```
+
+每个检查必须定义输入、代码版本、预期条件、严重性和处置：
+
+- **PASS**：条件满足；
+- **WARN**：保存警告并可按策略继续；
+- **FAIL**：阻断下游或交付；
+- **NEEDS_REVIEW**：暂停等待专家；
+- **NOT_APPLICABLE**：记录为何不适用。
+
+常见检查包括：
+
+- 样本表、目标文件和矩阵的样本 ID 集合一致；
+- 矩阵行列、数据类型、缺失值、ID 唯一性符合契约；
+- FASTQ/BAM/索引可读且配对完整；
+- 比对、测序深度、重复率等指标在该项目批准的范围或参考分布内；
+- 参考基因组、注释和索引身份与计划一致；
+- 输出数量、目录和文件格式完整；
+- 最小测试或历史参考结果在策略规定的差异范围内。
+
+阈值必须来自实验类型、批准的分析方案、验证数据或专家维护的策略，不得由 Agent 临时猜测。规则允许“缺失阈值时需要审核”，不允许为了通过而自动放宽阈值。参考结果比较可以定义结构、统计指标和容许差异，不强制所有文件逐字节相同。
+
+### 6.3 校验器的实现位置
+
+校验器不是另一个必须独立部署的 Agent。建议由一个通用 validator engine 加载各组学校验插件：
+
+```text
+agent/
+  validators/
+    common.py
+    bulk_rna.py
+    scrna.py
+    atac.py
+  policies/
+    bulk_rna/*.yaml
+    scrna/*.yaml
+  skills/
+    bulk-rna/SKILL.md
+    scrna/SKILL.md
+```
+
+插件负责读取真实文件、计算指标并输出结构化结果；Skill 负责告诉 Agent 如何选择策略和解释证据；专家批准方案及策略。大型组织可以另设结果审查 Agent 生成第二意见，但它不能绕过上述校验器或人工闸门。
+
+校验器可以作为 Snakemake rule 运行，也可以作为提交前/交付前服务。对于会影响下游的检查，优先设为显式校验 rule，产出带版本的 `validation.json` 和 `validation_passed` 标记。
+
+
+## 八、Rule 库增长与治理
+
+### 8.1 候选 rule 入库门禁
+
+新增或修改 rule 的候选包必须包含 rule diff、manifest、相关 helper/script、环境 YAML 和锁文件、校验器、最小测试数据、预期输出、dry-run、最小真实运行和来源说明。入库必须通过：
+
+1. Schema 与依赖校验；
+2. 静态加载和 dry-run；
+3. 最小真实运行和输出校验；
+4. 专家审核 checklist；
+5. 新版本 release 和不可变制品保存。
+
+专家批准的是候选 rule 的适用范围和证据，不只是代码能否运行。被驳回的草案和修正意见可作为 Agent 的提示范例，但不得被当作已发布能力。
+
+### 8.2 候选 pipeline 发布门禁
+
+复用已发布 rule 生成的候选 pipeline 必须包含 AnalysisPlan、PipelinePlan、依赖 lock、编译产物、dry-run、最小真实运行、结果校验和人工审核记录。审核通过后发布不可变 pipeline；变更 rule 组合、关键参数、参考、环境或策略时创建新的 pipeline revision。
+
+### 8.3 缺口与持续测试
+
+端口断链、缺 rule、缺 deliverable、校验失败和专家否决必须写入 gap log。高频缺口用于安排 rule 策展。CI 定期复测已发布 rule 和 pipeline；环境或工具升级导致失效的版本标记为待修复，Agent 组链时禁用，历史运行仍保留原 lock。
 
 ---
 
-## 十一、泛化路线
+## 九、实现形态与工具接口
 
-本方案的本质范式 = **声明式 workflow + 结构化接口契约 + Agent 编排 + 可执行验证回路**，可平移到：
+### 9.1 两种工作模式
 
-| 领域 | 对应物 | 验证回路 |
-|---|---|---|
-| Nextflow | process 的 input/output channel 声明（天然类型化） | `nextflow run -preview` / stub-run |
-| CWL/WDL | 本身即强类型接口定义（契约最完备） | `cwltool --validate` / miniwdl check |
-| Makefile | target + 依赖文件 | `make -n`（dry-run） |
-| CI/CD（GitHub Actions 等） | job 的 needs/outputs | act 本地演练 / workflow lint |
-| Airflow | task + DAG 依赖 | `airflow dags test` |
+同一个 Flow Agent 同时提供 Build 和 Run。Build 允许在隔离分支生成候选文件；Run 使用不可变 release。两种模式共用 catalog、manifest、validator、ledger 和审批服务。
 
-平移时不变的三件套：接口契约 manifest、产物目录 catalog、验证回路 SOP。Snakemake 是最佳起点：backward-chaining 与「从结果反推流程」天然同构，Python 生态对 Agent 最友好。
+第一版优先实现标准入口模式：Agent 生成 analysisyaml、样本表副本和 target，调用现有入口完成验证。只有现有入口无法表达需求时，才使用固定模板编译组合 Snakefile。当前模块依赖 samples、config、logger、rule_resource 和 workflow 等入口上下文，必须先完成上下文审计和 bootstrap 契约，再开放任意 module + use rule 组合。
+
+### 9.2 组合文件约定
+
+组合文件由编译器生成，位置为 composed/<pipeline-id>/，不覆盖已有目录：
+
+```text
+composed/<pipeline-id>/
+  plan.yaml
+  Snakefile
+  config/analysis.yaml
+  config/samples.csv
+  release.lock.yaml
+  validation/dry-run.txt
+  review/approval.json
+```
+
+禁止把 rule 本体复制到组合文件；只允许使用已发布模块和编译器支持的固定模板。组合文件中的每个 rule 引用必须能追溯到 rule_id@version。
+
+### 9.3 推荐工具
+
+```text
+query_catalog / query_ports / query_rules
+validate_plan / compile_pipeline
+validate_manifests / dry_run / detailed_summary
+validate_outputs / read_log / write_gap_log
+submit_cluster / pause / resume / rollback_run
+```
+
+工具输出必须结构化，同时保留可读摘要。Agent 的自然语言回答不能作为唯一审计证据。
 
 ---
 
-## 十二、附录
+## 十、阶段化实施与验收
 
-### 12.1 Agent 感知器官命令速查
+### 10.1 阶段 0：流程现状审计
+
+只查不改，产出模块/rule 清单、I/O 衔接、config key、helper 和动态 I/O 清单、入口上下文、样本配对现状、环境与参考依赖清单。抽查文件和行号必须能对应实际代码。
+
+### 10.2 阶段 1：Manifest 与 Rule 版本试点
+
+选 rules/03.short_read_qc.smk 建立 manifest、rule_id、环境声明、最小测试和一个 Rule Release Bundle。验证 manifest、代码、helper、配置和环境能共同完成加载、dry-run 与最小运行。
+
+### 10.3 阶段 2：校验器、端口和 catalog
+
+建立 validate_manifests.py、端口属性兼容检查、catalog、派生索引、validation policy 和结果校验插件。故意修改 manifest、环境或输出结构时，CI 必须识别漂移或回归。
+
+### 10.4 阶段 3：PipelinePlan 与确定性编译器
+
+实现 PipelinePlan Schema、版本解析器和固定模板编译器。优先支持标准入口；确认 bootstrap 和上下文契约后，再支持组合模块。Agent 不得直接生成任意生产代码。
+
+### 10.5 阶段 4：Build/Run 端到端验收
+
+- 方案审核：Agent 生成 AnalysisPlan，专家修改或批准；改变科学含义后必须生成新修订。
+- 候选 pipeline：复用已发布 rule，生成 PipelinePlan 和编译产物，经过 dry-run、最小运行、结果校验和专家审核后发布。
+- 候选 rule：新增/修改 rule 连同依赖和测试进入独立入库门禁。
+- 运行授权：分别验证 autonomous、supervised、manual；未经授权的科学调整、版本变更和锁漂移必须被阻断。
+- 故障处理：验证日志诊断、授权内 rerun-incomplete、专家核对和重试熔断。
+- 历史回退：从旧 pipeline release 创建新 run，不覆盖现有输出，并能通过 run lock 还原代码、环境、参考和配置。
+
+### 10.6 阶段 5：平台化 Agent
+
+在上述资产稳定后，再决定采用 MCP、Agent SDK、CLI 或 Web UI。SDK 是实现选择，不应成为 manifest、release、lock 和验证契约的前置依赖。
+
+---
+
+## 十一、风险与回退原则
+
+| 风险 | 应对 |
+|---|---|
+| rule/manifest/环境漂移 | 同一原子变更或明确依赖锁；CI、hash 和不可变 release |
+| Agent 生成错误 | 只生成 Plan，确定性编译；Schema、dry-run、最小运行和专家审核 |
+| 科学方案错误 | AnalysisPlan 专家审核；结果异常进入 NEEDS_REVIEW |
+| 自动修复越权 | execution policy、动作白名单、审批服务和工具层 submit guard |
+| 参考数据被替换 | 对象存储不可变版本、hash 校验，禁止自动改用 latest |
+| 环境源失效 | Conda lock、平台记录、镜像/包制品缓存 |
+| 版本回退覆盖结果 | 隔离 checkout、独立 run_id 和输出目录 |
+| 动态 I/O 不可静态预测 | 标记高风险，实际 dry-run 和最小运行验证 |
+
+任何阶段出问题，新增资产均应以增量方式叠加，不得改变既有生产 release；需要修改生产 rule 时只能发布新版本。
+
+---
+
+## 十二、结论与残余边界
+
+本方案把开放式生成降维为：检索已审核 rule → 专家审核科学方案 → 结构化计划 → 确定性编译 → 自动验证 → 专家批准发布 → 按授权策略运行。它支持同一个 Agent 兼任 Build 和 Run，也支持 rule、环境、pipeline、参考数据和运行实例的完整版本锁定，因此可以服务新流程建设、客户历史版本复跑、升级比较和回退。
+
+结果校验不需要额外的必选 Agent：校验器负责可重复计算，组学 Skill 负责方法知识和异常解释，专家负责科学判断。可选的第二意见 Agent 不能替代校验器或人工审核。
+
+仍需明确的边界：dry-run 不证明科学正确；锁定版本不保证所有工具逐字节确定；Agent 不能替代专家对新研究设计的判断。凡是改变科学含义的调整，都必须回到 AnalysisPlan 和发布审核流程。
+
+---
+
+## 附录：命令与记录速查
 
 ```bash
-snakemake -n <targets>                      # dry-run：验证流程组合，不执行
-snakemake --detailed-summary <targets>      # 每个文件的状态/计划/输入输出
-snakemake --dag <targets> | dot -Tsvg > dag.svg   # 实际 DAG 图
-snakemake --rulegraph | dot -Tsvg > rg.svg  # rule 级依赖图（不展开样本）
-snakemake --lint                            # 流程质量检查
-snakemake --list-target-rules               # 列出全部目标 rule
-snakemake --rerun-incomplete                # 失败后断点续跑
-python agent/validate_manifests.py          # manifest/端口/catalog 一致性校验
+snakemake -n <targets>
+snakemake --detailed-summary <targets>
+snakemake --dag <targets> | dot -Tsvg > dag.svg
+snakemake --rulegraph | dot -Tsvg > rulegraph.svg
+snakemake --lint
+snakemake --list-target-rules
+snakemake --rerun-incomplete
+python agent/validate_manifests.py
+python agent/validate_plan.py plan.yaml
+python agent/compile_pipeline.py plan.yaml
 ```
 
-### 12.2 文献记录的失败模式 → 本方案的对症机制
+每次 Build/Run 至少保存：release.lock.yaml、run.lock.yaml、有效 config、样本表、reference lock、环境 lock、dry-run、summary、validation.json、approval 和 JSONL ledger。大文件放对象存储，记录 URI、版本 ID 和 SHA-256。
 
-| 文献记录的失败模式 | 本方案的对症机制 | 证据 |
-|---|---|---|
-| 参数错误（非法语法/不支持的参数）、文件路径错误（I/O 路径用错） | manifest 端口契约 + validate_manifests.py + dry-run 回路 | 单命令运行期错误被分为参数错误、路径错误、其他三类（metaviral workflow 研究，PMC12782108） |
-| 从零生成的 workflow 无一能直接执行（结构 93% 准确但跑不通） | 把「开放式生成」降维为「检索选择已验证 rule + 薄生成层 + 验证回路」 | Prompt-to-Pipeline（arXiv 2507.20122）按 GTN/nf-core 基线评估正确性/完整性/可执行性 |
-| 生成结果需要迭代修复 | dry-run → 报错回灌 → 修复回路；Snakemake 同款机制实测「1~2 轮迭代可修复大多数错误」，边缘案例用 step-back prompting | Snakemaker（arXiv 2505.02841） |
-| 单 Agent 修复能力有限 | SOP 决策树 + 报错对策表 + 熔断（同一报错 2 次即止） | 系统化综述（26 项研究，2019–2026）：多智能体系统（BioMaster、MARWA）在 18 种组学、102 个工具上错误恢复一致优于单智能体 |
-
-### 12.3 三个残余缺口（本方案不声称解决的）
-
-1. **语义错误 / 静默灰错**：dry-run 只验证「接线正确」，不验证「科学上正确」。多智能体失败中 75.17% 是「通过编译与表面检查但违背预期逻辑」的静默灰错（MAST，NeurIPS 2025）；显式验证阶段可带来 +15.6% 成功率提升。→ 对应 v1.1 增补方向：在 dry-run 之后加「结果校验层」（输出检查点、与参考结果比对）。
-2. **运行期错误**：dry-run 通过不代表实际执行通过（命令内部 typo、工具版本、资源不足）；本方案由 log 读取回路覆盖，但迭代修复成功率有上限（实测阶梯约 60% → 85% → 95%），因此禁区保留「2 次熔断 + 人工确认」设计。
-3. **迭代提示的天花板**：部分失败模式靠反复提示无法自愈（模型会坚持错误解释）；新 rule 生成仍是生成问题——因此 SOP 规定新 rule 草案必须人工确认后才入库。
-
-### 12.4 结论
-
-本方案把开放式生成问题降维成「检索 + 选择 + 薄生成 + 可执行验证」问题，与 2025–2026 文献收敛的方向一致，可消除绝大部分接线类与配置类报错；但「完全解决」不成立——语义正确性需要额外的结果校验层，这是 v1.1 的明确增补点。另注意：PRISMA 系统化综述指出目前尚无研究做出「监控-检测-修复-审计」端到端自愈流程，本方案实施本身即构成差异化贡献。
-
----
-
-## 文档状态
-
-- v1.0（2026-09-03）：规范定稿。将原计划的阶段性提示词块改为规范条文与实施验收；把原附录第 11~16 章（文献映射、增长机制、实现形态、注册表检索、维护分工）整合进正文章节；保留阶段化实施作为符合性验证路径。
-
-[^1]: Masera M, Leone A, Köster J, et al. Snakemaker: Seamlessly transforming ad-hoc analyses into sustainable Snakemake workflows with generative AI[J]. arXiv preprint arXiv:2505.02841, 2025.
+[^1]: Masera M, Leone A, Köster J, et al. Snakemaker: Seamlessly transforming ad-hoc analyses into sustainable Snakemake workflows with generative AI[J]. arXiv preprint:2505.02841, 2025.
