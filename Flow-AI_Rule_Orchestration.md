@@ -510,13 +510,13 @@ agent/
 
 ## 八、实现形态与工具接口
 
-### 9.1 两种工作模式
+### 8.1 两种工作模式
 
 同一个 Flow Agent 同时提供 Build 和 Run。Build 允许在隔离分支生成候选文件；Run 使用不可变 release。两种模式共用 catalog、manifest、validator、ledger 和审批服务。
 
 第一版优先实现标准入口模式：Agent 生成 analysisyaml、样本表副本和 target，调用现有入口完成验证。只有现有入口无法表达需求时，才使用固定模板编译组合 Snakefile。当前模块依赖 samples、config、logger、rule_resource 和 workflow 等入口上下文，必须先完成上下文审计和 bootstrap 契约，再开放任意 module + use rule 组合。
 
-### 9.2 组合文件约定
+### 8.2 组合文件约定
 
 组合文件由编译器生成，位置为 composed/<pipeline-id>/<revision>/，不覆盖已有目录：
 
@@ -541,7 +541,7 @@ composed/<pipeline-id>/<revision>/
 
 失败分类和重试上限由版本化 execution policy 定义，Agent 不得现场改变：瞬时集群/网络错误可有限自动重试；输入数据或配置错误转为 NEEDS_REVIEW；科学指标异常必须暂停专家核对；同一错误达到上限后熔断并生成证据包。
 
-### 9.3 推荐工具
+### 8.3 推荐工具
 
 ```text
 query_catalog / query_ports / query_rules
@@ -557,23 +557,23 @@ submit_cluster / pause / resume / rerun_release
 
 ## 九、阶段化实施与验收
 
-### 10.1 阶段 0：流程现状审计
+### 9.1 阶段 0：流程现状审计
 
 只查不改，产出模块/rule 清单、I/O 衔接、config key、helper 和动态 I/O 清单、入口上下文、样本配对现状、环境与参考依赖清单。抽查文件和行号必须能对应实际代码。
 
-### 10.2 阶段 1：Manifest 与 Rule 版本试点
+### 9.2 阶段 1：Manifest 与 Rule 版本试点
 
 选 rules/03.short_read_qc.smk 建立 manifest、rule_id、环境声明、最小测试和一个 Rule Release Bundle。验证 manifest、代码、helper、配置和环境能共同完成加载、dry-run 与最小运行。
 
-### 10.3 阶段 2：校验器、端口和 catalog
+### 9.3 阶段 2：校验器、端口和 catalog
 
 建立 validate_manifests.py、端口属性兼容检查、catalog、派生索引、validation policy 和结果校验插件。故意修改 manifest、环境或输出结构时，CI 必须识别漂移或回归。
 
-### 10.4 阶段 3：PipelinePlan 与确定性编译器
+### 9.4 阶段 3：PipelinePlan 与确定性编译器
 
 实现 PipelinePlan Schema、版本解析器和固定模板编译器。优先支持标准入口；确认 bootstrap 和上下文契约后，再支持组合模块。Agent 不得直接生成任意生产代码。
 
-### 10.5 阶段 4：Build/Run 端到端验收
+### 9.5 阶段 4：Build/Run 端到端验收
 
 - 方案审核：Agent 生成 AnalysisPlan，专家修改或批准；改变科学含义后必须生成新修订。
 - 候选 pipeline：复用已发布 rule，生成 PipelinePlan 和编译产物，经过 dry-run、最小运行、结果校验和专家审核后发布。
@@ -582,9 +582,76 @@ submit_cluster / pause / resume / rerun_release
 - 故障处理：验证日志诊断、授权内 rerun-incomplete、专家核对和重试熔断。
 - 历史回退：从旧 pipeline release 创建新 run，不覆盖现有输出，并能通过 run lock 还原代码、环境、参考和配置。
 
-### 10.6 阶段 5：平台化 Agent
+### 9.6 阶段 5：平台化 Agent
 
 在上述资产稳定后，再决定采用 MCP、Agent SDK、CLI 或 Web UI。SDK 是实现选择，不应成为 manifest、release、lock 和验证契约的前置依赖。
+
+
+---
+
+## 十、Todo：从技术验证到 Agent 平台
+
+本节是当前实施清单。四个阶段必须按顺序推进；每一阶段形成证据并通过门槛后，才能冻结下一阶段的接口。Todo 中的“完成”指代码、测试、文档和验收记录均已提交，而不是仅完成讨论。
+
+### 10.1 Snakemake 组合 spike：验证 A1
+
+**目标**：证明语义端口、路径绑定和现有 Flow 入口上下文能够落地为真实 Snakemake DAG。
+
+**工作流**：
+
+1. 固定 Snakemake 8/9 版本和一个可运行的 executor/profile；记录平台与插件版本。
+2. 选择 `03.short_read_qc.smk` 与一个下游模块，建立最小 fixture、样本表和配置。
+3. 分别测试标准入口模式、`module`/`use rule`、rule 命名空间、`ruleorder` 和必要的 `with:` 重写。
+4. 验证 output/input pattern、wildcard、`expand`、directory、log、benchmark、conda 和 workdir 的解析结果。
+5. 验证 `samples`、`config`、`logger`、`rule_resource`、`workflow` 等上下文的 bootstrap 方式。
+6. 单独记录 checkpoint、input function 和动态输出的限制；含 checkpoint 的测试禁止使用 `--immediate-submit`。
+7. 生成 rulegraph、DAG、dry-run 和最小真实运行证据，记录不能组合的旧模块。
+
+**交付物**：`spikes/snakemake-composition/`、测试 Snakefile、fixture、运行日志、限制清单和 A1 决策记录。
+
+**通过门槛**：至少一个跨模块组合可重复通过加载、dry-run 和最小运行；失败路径能定位到明确的上下文、路径或 Snakemake 机制限制。未通过时，PipelinePlan 只能支持标准入口模式，不能冻结任意模块组合接口。
+
+### 10.2 阶段 0 审计：建立现状基线
+
+**目标**：只读审计现有流程，避免新契约建立在错误假设上。
+
+**工作流**：
+
+1. 枚举所有 Flow 入口、module、rule、helper、脚本和环境文件。
+2. 提取 rule 名、输入输出、`config[...]`、全局变量、`expand`、input function、checkpoint、`unpack`、目录输出、日志和 benchmark。
+3. 识别 executor、profile、jobs、default-resources、队列映射和支持平台；记录实际 Snakemake 与插件版本。
+4. 盘点 Conda YAML、锁文件、channel、容器、参考基因组和索引依赖。
+5. 形成 module 上下文矩阵：每个模块需要的 config、samples、logger、helper、workdir 和 bootstrap。
+6. 盘点样本表、配对表、参考配置和运行目录的实际格式与变更步骤。
+
+**交付物**：`audit/` 下的模块/rule 清单、I/O 表、config key 表、helper/context 表、动态 rule 清单、环境/profile 清单和风险登记。
+
+**通过门槛**：抽查的文件行号、config key、动态 rule、executor/profile 与实际代码和运行配置一致；未建档或存在歧义的模块标为禁用自动组链。
+
+### 10.3 冻结 PipelinePlan 与编译器接口
+
+只有 spike 和审计通过后执行。先定义 PipelinePlan Schema、版本解析器、依赖闭包解析、端口属性兼容检查、确定性编译器和 lock 生成器。
+
+**工作流**：
+
+1. 将 AnalysisPlan 复审矩阵转成机器可执行策略。
+2. 定义 `existing_entry` 和 `compiled_modules` 的能力边界。
+3. 固定 Plan → config/样本表/target 或组合 Snakefile 的模板；禁止模型直接生成任意生产代码。
+4. 编译后自动运行 manifest 校验、Snakemake 加载、dry-run、summary 和 lock 一致性检查。
+5. 将 rule、环境、executor/profile、参考、validator、Skill 和编译器全部写入 release lock。
+6. 用 spike 的真实样例完成回归测试，冻结 Schema 版本和向后兼容策略。
+
+**通过门槛**：同一 Plan 在干净工作目录重复编译结果一致；生成文件可被 Snakemake 加载；lock 能还原全部直接和传递依赖；改变科学字段能触发重新审核。
+
+### 10.4 Agent 平台开发
+
+在接口冻结后实现 Build/Run Agent，不把 Agent 平台开发反过来决定流程契约。
+
+**Build**：查询 catalog/ports/rules → 生成 AnalysisPlan → 专家审核 → 生成 PipelinePlan → 编译 → 四级验证 → 生成评审包 → 发布 pipeline 或候选 rule。
+
+**Run**：选择不可变 release → 生成 pre-run lock → 预检与 dry-run → 按 autonomous/supervised/manual 授权 → 提交和监控 → 读取日志 → 执行授权内修复或转专家 → 生成 post-run manifest → 结果校验与交付。
+
+**平台验收**：验证未经授权的提交、锁漂移、recalled release、科学参数修改和跨租户访问均被工具层阻断；验证失败任务重试、checkpoint post-run manifest、历史 release 复跑和 `rerun_release` 回退；记录 Agent 成功率、专家驳回率、验证拦截率和越权拦截率。
 
 ---
 
