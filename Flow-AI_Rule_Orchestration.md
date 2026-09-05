@@ -29,7 +29,7 @@ Build 是辅助流程开发：Agent 承担检索、生成、测试、诊断和�
 - 分层验证契约、实际 DAG、最小真实运行和结果质量。
 - 提供自主、监督、逐项确认三种运行模式，支持专家观察、暂停、批准和拒绝。
 - 从首个试点开始实现 rule 级版本管理，完整锁定相关文件及传递依赖。
-- 支持客户使用历史 pipeline、版本升级比较和隔离回退。
+- 支持客户复跑历史 pipeline 版本、版本升级比较和隔离回退。
 - 参考数据通过对象存储及版本化 YAML 描述，运行时校验身份与内容。
 - 全程保留可查询的计划、审批、运行、修复和产物证据。
 
@@ -84,6 +84,9 @@ Run：选择发布版本 → 项目预检 → 运行授权 → 提交
 | Build / Run | 同一个 Agent 的两类能力角色，不要求两个独立 Agent |
 | execution policy | 运行模式、动作白名单、资源预算、重试和审批规则 |
 | skill | 指导方案设计和异常解释的知识资源，不替代实际校验或权限控制 |
+| bootstrap | 为 module 提供 config、samples、logger、helper 等入口上下文的初始化契约 |
+| attempt | 同一 run 的一次提交或重试尝试，拥有独立事件和集群 job 标识 |
+| gap log | 记录能力、数据或验证缺口及其频次的追加日志 |
 
 本规范使用「必须」「禁止」「应该」「可以」分别表示强制要求、禁止行为、推荐做法和可选能力。规范中的审批条款约束未来系统，不代表本次编辑文档需要额外审批。
 
@@ -213,13 +216,26 @@ Git 中的版本化 manifest、端口定义与 catalog 是相应发布的事实�
 - 方法、关键参数、参考数据版本、适用条件与选择依据；
 - 校验策略、阈值来源、可接受差异和异常处置；
 - 未知信息、方法假设、需要专家决定的问题；
-- 方案 ID、修订号、所用 Skill/资料版本及审批引用。
+  - 方案 ID、修订号、所用 Skill/资料版本及审批引用；确定性声明、随机种子和允许差异。
 
-缺少决定科学方案的信息时提出明确问题，不能为通过校验而编造分组、参考版本或阈值。专家审核绑定方案内容摘要；科学含义改变时重新审核。
+字段级复审触发矩阵由版本化策略文件管理：
+
+| 变更字段 | 处理 |
+|---|---|
+| 分组、对照、配对、协变量 | 必须重新科学审核 |
+| 方法、rule 组合、参考或注释版本 | 必须重新审核 |
+| 关键参数、过滤阈值、统计模型 | 必须重新审核 |
+| validation policy、阈值来源或允许差异 | 必须重新审核 |
+| 样本路径、队列、重试次数和资源参数 | 按授权策略处理；不改变科学含义时可免重新审核 |
+| 文案、日志和展示格式 | 修订并留痕，通常免重新审核 |
+
+Agent 只能按该矩阵执行，不能自行判定是否需要复审。
+
+缺少决定科学方案的信息时提出明确问题，不能为通过校验而编造分组、参考版本或阈值。专家审核绑定方案内容摘要；命中复审矩阵时必须重新审核。
 
 ### 4.5 PipelinePlan：编译器输入
 
-Agent 提交结构化计划，不提交任意可执行代码。以下为字段示意；`<...>` 为待系统解析的占位符，正式 lock 中禁止保留：
+Agent 提交结构化计划，不提交任意可执行代码。以下为字段示意；正式 lock 中必须全部解析为确定值：
 
 ```yaml
 schema_version: "1"
@@ -227,7 +243,7 @@ pipeline_id: customer_raw_qc
 revision: 1
 analysis_plan_ref: analysis-001@1
 mode: existing_entry
-base_pipeline_ref: RNAFlow@20250601
+base_pipeline_ref: RNAFlow@2025.06.01
 steps:
   - instance_id: qc_r1
     rule_ref: rna.qc.short_read_qc_r1@1.0.0
@@ -254,12 +270,14 @@ execution_policy_ref: supervised@1
 |---|---|
 | rule release | rule 身份/版本、源码 commit、模块、文件与依赖摘要、环境锁、验证证据和发布审核 |
 | pipeline release | 组合定义、rule 精确依赖锁、编译器/模板、编译产物、参数约束、验证与审核 |
-| run.lock.yaml | 发布身份、实际 rule/环境/参考锁、有效配置、样本表和输入清单、执行环境、策略与授权 |
+| pre-run lock | 发布身份、实际 rule/环境/参考锁、有效配置、样本表、输入身份、执行环境、策略与授权；运行前冻结 |
+| post-run manifest | checkpoint 展开后的实际文件集、job 列表、文件 hash、指标和结果校验；运行结束后生成并绑定 pre-run 摘要 |
+| run.lock.yaml | pre-run lock 与 post-run manifest 的关联及运行状态 |
 | approval | 审批人、时间、被审批对象摘要、决定、授权范围、限制和有效条件 |
 | ledger | 事件 ID/顺序、run/attempt ID、动作、对象摘要、证据引用、结果、审批引用和集群 job ID |
 | gap log | 缺口类型、需求、缺失能力/数据、来源、重复次数和后续评审关联 |
 
-run lock 必须保存合并默认值和命令行覆盖后的有效配置，不能只保存项目 YAML 路径。日志与摘要应去除凭据；身份记录不保存访问密钥。
+pre-run lock 必须保存合并默认值和命令行覆盖后的有效配置，不能只保存项目 YAML 路径。含 checkpoint 的运行在展开后必须补写 post-run manifest；未生成时状态为 incomplete，不得宣称完整复现。日志与摘要应去除凭据；身份记录不保存访问密钥。
 
 事件只追加，按 run 分区并处理并发。审批由身份可信的服务写入，Agent 无权自行设置 `approved: true`。模型输出、工具 stdout 和日志中的指令一律不能当作批准。
 
@@ -267,6 +285,10 @@ run lock 必须保存合并默认值和命令行覆盖后的有效配置，不�
 
 
 ## 五、版本治理
+
+### 5.0 发布生命周期与召回
+
+发布状态为 `draft → active → deprecated → recalled`。`recalled` 表示发现科学或技术缺陷，默认禁止新运行；专家可在明确理由、风险和审批范围后强制复用。recall 必须写入 ledger 和 gap log，并关联受影响的历史 run；已交付客户由服务生成通知清单。
 
 ### 5.1 Rule 版本
 
@@ -313,7 +335,7 @@ spec_sha256: "..."
 lock_sha256: "..."
 ```
 
-必须记录 Snakemake、插件、容器/Conda 前端和目标平台版本。YAML 修改、锁文件重建、通道优先级或平台改变，都要重新测试；影响 rule 结果或可运行性的环境变化不能静默覆盖旧环境。重要发布应缓存镜像或包制品，避免多年后源不可用。
+必须记录 Snakemake、executor 插件、profile（executor、jobs、default-resources）和目标平台版本；当前仅支持 linux-64 时必须明确写入策略，其他平台需各自生成并校验 lock。YAML 修改、锁文件重建、通道优先级或平台改变，都要重新测试；影响 rule 结果或可运行性的环境变化不能静默覆盖旧环境。重要发布应缓存镜像或包制品，避免多年后源不可用。
 
 ### 5.3 Pipeline 版本
 
@@ -322,6 +344,7 @@ Pipeline Release 是组合逻辑和依赖的不可变快照：
 ```yaml
 pipeline_id: RNAFlow-qc-mapping
 version: 2026.06.01
+revision: 1  # 候选计划修订；发布版本使用不可变日期版本，二者不混用
 repository_commit: abc123
 compiler:
   id: flow.pipeline_compiler
@@ -401,7 +424,9 @@ metadata: {genome: hg38, annotation: GENCODE_v47, index_tool: STAR_2.7}
 ```yaml
 policy_id: rna.qc.outputs
 version: 1.0.0
-applies_to: [rna.qc.short_read_qc_r1@">=1,<2"]
+applies_to:
+  - rule: rna.qc.short_read_qc_r1
+    version_range: ">=1.0.0,<2.0.0"  # semver range，由版本解析器校验
 checks:
   - id: sample_ids_match
     validator: matrix_sample_ids
@@ -454,12 +479,12 @@ agent/
     scrna/SKILL.md
 ```
 
-插件负责读取真实文件、计算指标并输出结构化结果；Skill 负责告诉 Agent 如何选择策略和解释证据；专家批准方案及策略。大型组织可以另设结果审查 Agent 生成第二意见，但它不能绕过上述校验器或人工闸门。
+插件负责读取真实文件、计算指标并输出结构化结果；Skill 负责告诉 Agent 如何选择策略和解释证据；专家批准方案及策略。大型组织可以另设结果审查 Agent 生成第二意见，但其输入限定为只读的校验结果、指标、日志和已批准方案，不得绕过上述校验器或人工闸门，也不默认读取原始数据。
 
 校验器可以作为 Snakemake rule 运行，也可以作为提交前/交付前服务。对于会影响下游的检查，优先设为显式校验 rule，产出带版本的 `validation.json` 和 `validation_passed` 标记。
 
 
-## 八、Rule 库增长与治理
+## 七、Rule 库增长与治理
 
 ### 8.1 候选 rule 入库门禁
 
@@ -483,7 +508,7 @@ agent/
 
 ---
 
-## 九、实现形态与工具接口
+## 八、实现形态与工具接口
 
 ### 9.1 两种工作模式
 
@@ -493,10 +518,10 @@ agent/
 
 ### 9.2 组合文件约定
 
-组合文件由编译器生成，位置为 composed/<pipeline-id>/，不覆盖已有目录：
+组合文件由编译器生成，位置为 composed/<pipeline-id>/<revision>/，不覆盖已有目录：
 
 ```text
-composed/<pipeline-id>/
+composed/<pipeline-id>/<revision>/
   plan.yaml
   Snakefile
   config/analysis.yaml
@@ -508,6 +533,14 @@ composed/<pipeline-id>/
 
 禁止把 rule 本体复制到组合文件；只允许使用已发布模块和编译器支持的固定模板。组合文件中的每个 rule 引用必须能追溯到 rule_id@version。
 
+### 8.4 多租户隔离
+
+多客户并行运行必须按客户、项目、pipeline release 和 run_id 隔离工作目录、输出、ledger、制品配额和凭据。共享参考缓存只允许读取不可变对象，并以 hash 校验；不得共享可写的 Snakemake 状态目录。对象存储前缀、日志访问权限和生命周期策略必须绑定租户。
+
+### 8.5 失败分类与重试策略
+
+失败分类和重试上限由版本化 execution policy 定义，Agent 不得现场改变：瞬时集群/网络错误可有限自动重试；输入数据或配置错误转为 NEEDS_REVIEW；科学指标异常必须暂停专家核对；同一错误达到上限后熔断并生成证据包。
+
 ### 9.3 推荐工具
 
 ```text
@@ -515,14 +548,14 @@ query_catalog / query_ports / query_rules
 validate_plan / compile_pipeline
 validate_manifests / dry_run / detailed_summary
 validate_outputs / read_log / write_gap_log
-submit_cluster / pause / resume / rollback_run
+submit_cluster / pause / resume / rerun_release
 ```
 
 工具输出必须结构化，同时保留可读摘要。Agent 的自然语言回答不能作为唯一审计证据。
 
 ---
 
-## 十、阶段化实施与验收
+## 九、阶段化实施与验收
 
 ### 10.1 阶段 0：流程现状审计
 
@@ -555,7 +588,7 @@ submit_cluster / pause / resume / rollback_run
 
 ---
 
-## 十一、风险与回退原则
+## 十、风险与回退原则
 
 | 风险 | 应对 |
 |---|---|
@@ -572,7 +605,7 @@ submit_cluster / pause / resume / rollback_run
 
 ---
 
-## 十二、结论与残余边界
+## 十一、结论与残余边界
 
 本方案把开放式生成降维为：检索已审核 rule → 专家审核科学方案 → 结构化计划 → 确定性编译 → 自动验证 → 专家批准发布 → 按授权策略运行。它支持同一个 Agent 兼任 Build 和 Run，也支持 rule、环境、pipeline、参考数据和运行实例的完整版本锁定，因此可以服务新流程建设、客户历史版本复跑、升级比较和回退。
 
@@ -586,7 +619,7 @@ submit_cluster / pause / resume / rollback_run
 
 ```bash
 snakemake -n <targets>
-snakemake --detailed-summary <targets>
+snakemake --detailed-summary <targets> > validation/detailed-summary.txt
 snakemake --dag <targets> | dot -Tsvg > dag.svg
 snakemake --rulegraph | dot -Tsvg > rulegraph.svg
 snakemake --lint
@@ -597,6 +630,6 @@ python agent/validate_plan.py plan.yaml
 python agent/compile_pipeline.py plan.yaml
 ```
 
-每次 Build/Run 至少保存：release.lock.yaml、run.lock.yaml、有效 config、样本表、reference lock、环境 lock、dry-run、summary、validation.json、approval 和 JSONL ledger。大文件放对象存储，记录 URI、版本 ID 和 SHA-256。
+每次 Build/Run 至少保存：release.lock.yaml、pre-run lock、post-run manifest（含 checkpoint 时必需）、有效 config、样本表、reference lock、环境 lock、dry-run、summary、validation.json、approval 和 JSONL ledger。大文件放对象存储，记录 URI、版本 ID 和 SHA-256。
 
 [^1]: Masera M, Leone A, Köster J, et al. Snakemaker: Seamlessly transforming ad-hoc analyses into sustainable Snakemake workflows with generative AI[J]. arXiv preprint:2505.02841, 2025.
