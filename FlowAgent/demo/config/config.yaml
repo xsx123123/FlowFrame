@@ -1,0 +1,6 @@
+convert_md5: link_dir
+
+parameter:
+  threads:
+    fastqc: 2
+    multiqc: 2

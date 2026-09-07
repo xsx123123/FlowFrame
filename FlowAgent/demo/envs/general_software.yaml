@@ -1,0 +1,3 @@
+general_software:
+  seq_preprocessor : /home/zj/zj_code_libarary/jz_tools/src/md5/Compile_release/seq_preprocessor_x86_64/release/seq_preprocessor
+  check_md5 : /home/zj/zj_code_libarary/jz_tools/src/md5/Compile_release/json_md5_verifier_x86_64/release/json_md5_verifier

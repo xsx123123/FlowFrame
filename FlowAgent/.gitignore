@@ -1,0 +1,9 @@
+node_modules/
+.env
+demo/.snakemake/
+demo/agent/run_ledger.jsonl
+demo/logs/
+demo/01.qc/
+demo/00.raw_data/link_dir/
+demo/composed/
+!demo/composed/README.md

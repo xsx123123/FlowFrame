@@ -1,0 +1,70 @@
+module:
+  id: "02.file_convert_md5"
+  title: "FASTQ 标准化与 MD5 校验(Rust 工具:seq_preprocessor / json_md5_verifier)"
+  snakefile: "rules/02.file_convert_md5.smk"
+  stage: "00.raw_data"
+  summary: >
+    用 Rust 工具 seq_preprocessor 将 vendor 原始 FASTQ 标准化为软链接(零拷贝)
+    并生成 MD5 审计报告,随后 json_md5_verifier 重算校验,
+    产出 01.qc/md5_check.tsv 作为全部下游的硬性门控。
+    二进制路径走 envs/general_software.yaml 的 general_software 段。
+  requires_helpers: []
+
+rules:
+  - name: seq_preprocessor
+    summary: "扫描 vendor 原始目录,创建标准化软链接并生成 raw_data_md5.json 审计报告"
+    wildcards: []
+    dynamic: false
+    per_sample: false
+    inputs:
+      - name: r1
+        port: "reads.raw.r1.fastq"
+        pattern: "00.raw_data/vendor/{sample}/{sample}_1.fq.gz"
+        expand_over: samples
+      - name: r2
+        port: "reads.raw.r2.fastq"
+        pattern: "00.raw_data/vendor/{sample}/{sample}_2.fq.gz"
+        expand_over: samples
+    outputs:
+      - name: links_r1
+        port: "reads.r1.fastq"
+        pattern: "00.raw_data/link_dir/{sample}/{sample}_R1.fq.gz"
+        kind: intermediate
+        expand_over: samples
+      - name: links_r2
+        port: "reads.r2.fastq"
+        pattern: "00.raw_data/link_dir/{sample}/{sample}_R2.fq.gz"
+        kind: intermediate
+        expand_over: samples
+      - name: json_report
+        port: "qc.raw_data_md5.json"
+        pattern: "00.raw_data/link_dir/raw_data_md5.json"
+        kind: intermediate
+    config_requires:
+      - "convert_md5"
+      - "general_software.seq_preprocessor"
+
+  - name: check_md5
+    summary: "json_md5_verifier 重算全部链接文件 MD5 并比对,产出硬性门控文件 md5_check.tsv;任一 FAIL 非零退出"
+    wildcards: []
+    dynamic: false
+    per_sample: false
+    inputs:
+      - name: json_report
+        port: "qc.raw_data_md5.json"
+        pattern: "00.raw_data/link_dir/raw_data_md5.json"
+      - name: links_r1
+        port: "reads.r1.fastq"
+        pattern: "00.raw_data/link_dir/{sample}/{sample}_R1.fq.gz"
+        expand_over: samples
+      - name: links_r2
+        port: "reads.r2.fastq"
+        pattern: "00.raw_data/link_dir/{sample}/{sample}_R2.fq.gz"
+        expand_over: samples
+    outputs:
+      - name: check_report
+        port: "qc.md5_check.tsv"
+        pattern: "01.qc/md5_check.tsv"
+        kind: intermediate
+    config_requires:
+      - "general_software.check_md5"

@@ -1,0 +1,51 @@
+# agent/ports.yaml —— 全部端口类型的中央注册表;新增端口类型必须先登记
+# producers / consumers 由校验/构建脚本从 manifest 聚合,人工维护 description
+ports:
+  reads.raw.r1.fastq:
+    description: "vendor 原始 R1 FASTQ(未标准化命名),数据交付方提供"
+    external: true
+    producers: []
+    consumers: ["02.file_convert_md5.seq_preprocessor"]
+  reads.raw.r2.fastq:
+    description: "vendor 原始 R2 FASTQ(未标准化命名),数据交付方提供"
+    external: true
+    producers: []
+    consumers: ["02.file_convert_md5.seq_preprocessor"]
+  reads.r1.fastq:
+    description: "标准化 R1 reads 软链接(link_dir/{sample}/{sample}_R1.fq.gz)"
+    producers: ["02.file_convert_md5.seq_preprocessor"]
+    consumers: ["02.file_convert_md5.check_md5", "03.short_read_qc.short_read_qc_r1"]
+  reads.r2.fastq:
+    description: "标准化 R2 reads 软链接(link_dir/{sample}/{sample}_R2.fq.gz)"
+    producers: ["02.file_convert_md5.seq_preprocessor"]
+    consumers: ["02.file_convert_md5.check_md5", "03.short_read_qc.short_read_qc_r2"]
+  qc.raw_data_md5.json:
+    description: "MD5 审计报告(原始路径→标准化路径映射)"
+    producers: ["02.file_convert_md5.seq_preprocessor"]
+    consumers: ["02.file_convert_md5.check_md5"]
+  qc.md5_check.tsv:
+    description: "MD5 校验通过闸门文件,所有读原始数据的 rule 的 input gate"
+    producers: ["02.file_convert_md5.check_md5"]
+    consumers:
+      - "03.short_read_qc.short_read_qc_r1"
+      - "03.short_read_qc.short_read_qc_r2"
+  qc.fastqc.html:
+    description: "FastQC 单样本报告(人类可读)"
+    producers:
+      - "03.short_read_qc.short_read_qc_r1"
+      - "03.short_read_qc.short_read_qc_r2"
+    consumers: []
+  qc.fastqc.zip:
+    description: "FastQC 原始数据包(单样本单方向)"
+    producers:
+      - "03.short_read_qc.short_read_qc_r1"
+      - "03.short_read_qc.short_read_qc_r2"
+    consumers:
+      - "03.short_read_qc.short_read_multiqc_r1"
+      - "03.short_read_qc.short_read_multiqc_r2"
+  qc.multiqc.report:
+    description: "MultiQC 聚合报告(全部样本,单方向)"
+    producers:
+      - "03.short_read_qc.short_read_multiqc_r1"
+      - "03.short_read_qc.short_read_multiqc_r2"
+    consumers: []
